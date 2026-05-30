@@ -21,6 +21,29 @@ npm run build    # type-checks, then emits a static site to dist/
 npm run preview  # serve the production build locally
 ```
 
+## Test
+
+The arm/switch animation is pure scene-graph math, so it can be verified
+headlessly — no GPU required:
+
+```bash
+npm test         # run the Vitest suite once
+npm run test:watch
+```
+
+[`src/UselessMachine.test.ts`](src/UselessMachine.test.ts) steps the animation
+deterministically and asserts **world-space** relationships: the arm's finger
+actually reaches the switch tip during the knock (and tracks it as it flips),
+the switch only moves while the finger is touching it, the arm only crosses the
+top surface within the lid opening (no clipping the solid frame), and the
+machine settles back to a clean idle state.
+
+This catches geometry/animation regressions — "the arm doesn't hit the right
+spot" — that are hard to spot by eye. For true *visual* fidelity (materials,
+lighting, exact pixels) the complementary approach is headless screenshot tests
+(e.g. Playwright rendering the scene at fixed animation timestamps and diffing
+against golden images); that lives outside this fast unit suite.
+
 ## Deploy
 
 Pushing to `main` triggers the GitHub Actions workflow in

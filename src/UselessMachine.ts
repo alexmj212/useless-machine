@@ -26,20 +26,20 @@ const OPEN_Z_HALF = 0.5;
 
 // Switch: mounted at the right lip of the opening so the arm can reach it
 // straight up through the hole.
-const SWITCH_POS = new THREE.Vector3(0.6, TOP_Y, 0);
+export const SWITCH_POS = new THREE.Vector3(0.6, TOP_Y, 0);
 const LEVER_LEN = 0.5;
 const LEVER_HALF = LEVER_LEN / 2;
-const SWITCH_ON = 0.5; // lever tilt (rad): +ve leans -X, over the opening
-const SWITCH_OFF = -0.5; // -ve leans +X, onto the deck
+export const SWITCH_ON = 0.5; // lever tilt (rad): +ve leans -X, over the opening
+export const SWITCH_OFF = -0.5; // -ve leans +X, onto the deck
 
 // Arm: pivots inside the box, under the opening.
-const ARM_PIVOT = new THREE.Vector3(-0.05, 0.5, 0);
+export const ARM_PIVOT = new THREE.Vector3(-0.05, 0.5, 0);
 const ARM_LEN = 1.05;
 const ARM_HALF = ARM_LEN / 2;
-const ARM_HIDDEN = -2.3; // folded down inside the box
-const ARM_OUT = 1.5; // swept up through the hole, into the lever
+export const ARM_HIDDEN = -2.3; // folded down inside the box
+export const ARM_OUT = 1.5; // swept up through the hole, into the lever
 
-const LID_OPEN = 1.95;
+export const LID_OPEN = 1.95;
 
 /** A rendered group kept in sync with a physics body each frame. */
 interface Linked {
@@ -65,7 +65,19 @@ const leverAngleOf = (q: CANNON.Quaternion): number => {
 
 const FIXED_DT = 1 / 120; // physics timestep
 
-type State = "idle" | "opening" | "extending" | "retracting" | "closing";
+export type State = "idle" | "opening" | "extending" | "retracting" | "closing";
+
+/** A physics body paired with a human-readable name, for debug overlays. */
+export interface DebugPart {
+  name: string;
+  body: CANNON.Body;
+}
+
+/** A hinge axis location, for drawing pivot markers in the debug overlay. */
+export interface DebugPivot {
+  name: string;
+  position: THREE.Vector3;
+}
 
 export class UselessMachine {
   readonly root = new THREE.Group();
@@ -290,6 +302,36 @@ export class UselessMachine {
   }
   get lidAngle(): number {
     return this.lidAngleValue;
+  }
+
+  // --- Debug introspection (read-only; does not affect the simulation) ------
+
+  /** Current state-machine phase. */
+  get phase(): State {
+    return this.state;
+  }
+  /** Seconds spent in the current phase. */
+  get phaseTime(): number {
+    return this.stateTime;
+  }
+  /** Whether the user has flipped it ON and the routine hasn't finished. */
+  get isOnState(): boolean {
+    return this.isOn;
+  }
+  /** Labeled physics bodies so a debug overlay can draw their collision shapes. */
+  get debugParts(): DebugPart[] {
+    return [
+      { name: "base", body: this.base },
+      { name: "lever", body: this.lever },
+      { name: "arm", body: this.arm },
+    ];
+  }
+  /** Hinge pivot locations (world space) for pivot markers. */
+  get debugPivots(): DebugPivot[] {
+    return [
+      { name: "arm-hinge", position: ARM_PIVOT.clone() },
+      { name: "lever-hinge", position: SWITCH_POS.clone() },
+    ];
   }
 
   // --- Simulation ----------------------------------------------------------

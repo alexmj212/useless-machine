@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { UselessMachine } from "./UselessMachine.js";
+import { DebugMenu } from "./DebugMenu.js";
 import "./style.css";
 
 // Deterministic mode for visual tests: time is driven by the test, not a clock,
@@ -87,7 +88,7 @@ if (testMode) {
   setupInteractive();
 }
 
-/** Live mode: click to flip, real-time animation loop. */
+/** Live mode: click to flip, real-time animation loop, debug menu attached. */
 function setupInteractive(): void {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -103,11 +104,27 @@ function setupInteractive(): void {
     }
   });
 
+  // The debug menu reads the machine and drives time; it never alters the sim.
+  const debug = new DebugMenu({
+    scene,
+    getMachine: () => machine,
+    rebuild: () => {
+      scene.remove(machine.root);
+      machine = new UselessMachine();
+      scene.add(machine.root);
+      return machine;
+    },
+    render,
+  });
+
   const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
-    machine.update(Math.min(clock.getDelta(), 0.05));
+    debug.frame(Math.min(clock.getDelta(), 0.05));
     render();
   });
+
+  // Under Vite HMR, tear the menu down so its global listeners don't stack.
+  import.meta.hot?.dispose(() => debug.dispose());
 }
 
 /**

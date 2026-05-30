@@ -40,3 +40,162 @@ body {
   user-select: none;
   transition: opacity 0.4s ease;
 }
+
+/* ---- Debug menu ---------------------------------------------------------- */
+
+.dbg-fab {
+  position: fixed;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 20;
+  padding: 0.4rem 0.7rem;
+  font: 600 0.8rem/1 system-ui, sans-serif;
+  color: #e6e9ef;
+  background: rgba(20, 22, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.dbg-fab:hover {
+  background: rgba(40, 44, 52, 0.95);
+}
+
+.dbg-panel {
+  position: fixed;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 21;
+  width: 340px;
+  max-height: calc(100vh - 1.5rem);
+  overflow-y: auto;
+  padding: 0.6rem 0.75rem 0.85rem;
+  background: rgba(16, 18, 22, 0.93);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  color: #d8dce3;
+  font: 0.74rem/1.35 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  user-select: none;
+}
+
+.dbg-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+.dbg-title {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+}
+.dbg-x {
+  background: none;
+  border: none;
+  color: #aab;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.dbg-x:hover {
+  color: #fff;
+}
+
+.dbg-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0.35rem 0;
+}
+.dbg-label {
+  width: 100%;
+  color: #8c93a1;
+  text-transform: uppercase;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+}
+
+.dbg-btn {
+  padding: 0.25rem 0.5rem;
+  color: #e6e9ef;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 5px;
+  cursor: pointer;
+  font: inherit;
+}
+.dbg-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.dbg-btn.dbg-active {
+  background: #2f6fd0;
+  border-color: #4a90d9;
+  color: #fff;
+}
+
+.dbg-scrub {
+  flex: 1;
+  accent-color: #4a90d9;
+}
+.dbg-scrub-label {
+  width: 3.2rem;
+  text-align: right;
+  color: #aeb4c0;
+}
+
+.dbg-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+}
+
+.dbg-telemetry {
+  margin: 0.2rem 0 0.4rem;
+  padding: 0.45rem 0.55rem;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 5px;
+  white-space: pre;
+  color: #cfe3ff;
+  font: inherit;
+}
+
+.dbg-counts {
+  color: #8c93a1;
+}
+.dbg-counts.dbg-has-warn {
+  color: #f2c14e;
+}
+.dbg-counts.dbg-has-error {
+  color: #ff6b6b;
+}
+
+.dbg-log {
+  margin-top: 0.25rem;
+  height: 150px;
+  overflow-y: auto;
+  padding: 0.4rem 0.5rem;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 5px;
+  font-size: 0.68rem;
+}
+.dbg-log-row {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #aeb4c0;
+}
+.dbg-info {
+  color: #8c93a1;
+}
+.dbg-phase {
+  color: #79c0ff;
+}
+.dbg-contact {
+  color: #6ee7c8;
+}
+.dbg-warn {
+  color: #f2c14e;
+}
+.dbg-error {
+  color: #ff6b6b;
+}

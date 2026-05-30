@@ -22,11 +22,15 @@ export default defineConfig({
     deviceScaleFactor: 1,
   },
 
-  // Allow small, sub-perceptual differences (font/AA jitter) but catch real
-  // visual regressions.
+  // `threshold` absorbs sub-pixel anti-aliasing jitter per pixel; the tight
+  // `maxDiffPixelRatio` keeps the suite sensitive enough to catch a real layout
+  // change (a loose ratio once let a moved switch pass against a stale
+  // baseline). On an intentional visual change, delete the affected snapshots
+  // and regenerate — `--update-snapshots` will not overwrite a baseline that
+  // still matches within these tolerances.
   expect: {
     toHaveScreenshot: {
-      maxDiffPixelRatio: 0.02,
+      maxDiffPixelRatio: 0.005,
       threshold: 0.2,
     },
   },

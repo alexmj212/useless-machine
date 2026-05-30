@@ -256,8 +256,10 @@ export class UselessMachine {
     arm.castShadow = true;
 
     // The finger nub that presses the toggle, at the very end of the arm.
+    // It sits on the leading (-Y) side so it points toward the switch as the
+    // arm reaches over — i.e. the arm is rolled 180° about its long axis.
     const finger = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.2, 0.14), armMat);
-    finger.position.set(ARM_LEN - 0.04, 0.07, 0);
+    finger.position.set(ARM_LEN - 0.04, -0.07, 0);
     finger.castShadow = true;
 
     this.fingerMarker.position.set(ARM_LEN, 0, 0);

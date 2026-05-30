@@ -54,9 +54,22 @@ npm run test:visual:update   # regenerate baselines after an intended change
 
 [`tests/visual.spec.ts`](tests/visual.spec.ts) drives the scene through a
 deterministic hook (`?test` mode in [`src/main.ts`](src/main.ts) exposes
-`window.__useless.frameAt(seconds)`), so each screenshot captures an exact
-animation moment — idle, lid opening, arm reaching, knock/contact, retracting,
-closing — with no real-time races. WebGL is forced onto SwiftShader (software
+`window.__useless.frameAt(seconds)` plus `window.__useless.phases`, the
+machine's own phase timeline). Each screenshot is taken at a genuine key point
+of the routine — resolved from the phase boundaries rather than guessed
+fractions of the runtime — so the captured states are exact and correctly
+labelled:
+
+| snapshot | animation moment |
+| --- | --- |
+| `idle` | lid closed, switch off |
+| `lid-open` | end of the lid-open phase |
+| `arm-reached` | arm out at the switch, still ON |
+| `switch-knocked` | lever pushed to OFF |
+| `arm-retracted` | arm withdrawn, lid still open |
+| `lid-closing` | mid lid-close |
+
+There are no real-time races. WebGL is forced onto SwiftShader (software
 rendering) in [`playwright.config.ts`](playwright.config.ts) so output is
 reproducible across machines with different GPUs.
 

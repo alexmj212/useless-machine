@@ -329,6 +329,25 @@ export class UselessMachine {
     return Object.values(PHASE_SECONDS).reduce((a, b) => a + b, 0);
   }
 
+  /**
+   * The animation phases with their absolute start/end times (seconds). Lets
+   * callers (e.g. visual tests) seek to the exact key moments of the routine
+   * rather than guessing at fractions of the total runtime.
+   */
+  static get phases(): ReadonlyArray<{
+    name: string;
+    start: number;
+    end: number;
+    mid: number;
+  }> {
+    let t = 0;
+    return Object.entries(PHASE_SECONDS).map(([name, duration]) => {
+      const start = t;
+      t += duration;
+      return { name, start, end: t, mid: start + duration / 2 };
+    });
+  }
+
   private startSequence(): void {
     this.sequence = [
       // Open the lid.

@@ -144,6 +144,7 @@ function setupTestMode(): void {
   (window as any).__useless = {
     ready: true,
     sequenceSeconds: UselessMachine.sequenceSeconds,
+    phases: UselessMachine.phases,
     frameAt,
     idle,
   };

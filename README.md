@@ -2,8 +2,10 @@
 
 A 3D simulation of a [useless machine](https://en.wikipedia.org/wiki/Useless_machine):
 a little box with a switch. Flip the switch on and an arm emerges to flip it
-right back off. Rendered with [Three.js](https://threejs.org/) and TypeScript,
-bundled by [Vite](https://vite.dev/), served as a static site.
+right back off. Rendered with [Three.js](https://threejs.org/), with the
+mechanism driven by a [cannon-es](https://pmndrs.github.io/cannon-es/) rigid-body
+**physics simulation** — the arm actually *collides* with the switch to knock it
+over. TypeScript, bundled by [Vite](https://vite.dev/), served as a static site.
 
 ## Develop
 
@@ -21,68 +23,44 @@ npm run build    # type-checks, then emits a static site to dist/
 npm run preview  # serve the production build locally
 ```
 
+## How the mechanism works
+
+The parts are rigid bodies in a [cannon-es](https://pmndrs.github.io/cannon-es/)
+world ([`src/UselessMachine.ts`](src/UselessMachine.ts)):
+
+- a **static base** — the walls and the top frame around the lid opening;
+- a **dynamic lever** on a hinge, made *bistable* by a restoring torque plus
+  hard end-stops, so it snaps to ON or OFF like a real toggle;
+- a **dynamic arm** on a hinge, driven by a motor that sweeps it out and back.
+
+When you flip the switch ON, the arm sweeps up through the opening and
+**collides** with the lever, knocking it back to OFF. The flip is a consequence
+of the collision — not a scripted keyframe — so the solver guarantees the arm
+and switch can never interpenetrate. The world runs without gravity: it's a
+tabletop mechanism whose every resting state is defined by the motor and the
+bistable detent.
+
 ## Test
 
-The arm/switch animation is pure scene-graph math, so it can be verified
-headlessly — no GPU required:
+Because the behaviour is a deterministic simulation, it's verified by **stepping
+the physics and asserting the outcome** — no GPU, no screenshots to maintain:
 
 ```bash
 npm test         # run the Vitest suite once
 npm run test:watch
 ```
 
-[`src/UselessMachine.test.ts`](src/UselessMachine.test.ts) steps the animation
-deterministically and asserts **world-space** relationships: the arm's finger
-actually reaches the switch tip during the knock (and tracks it as it flips),
-the switch only moves while the finger is touching it, the arm only crosses the
-top surface within the lid opening (no clipping the solid frame), and the
-machine settles back to a clean idle state.
+[`src/UselessMachine.test.ts`](src/UselessMachine.test.ts) drives the sim and
+checks behaviour, not pixels: it starts OFF and idle; `activate()` flips it ON;
+stepping the world to completion knocks it back to OFF; the lever stays within
+its travel (end-stops, no fling-past); the arm returns inside the box; and
+clicks are ignored mid-routine.
 
-This catches geometry/animation regressions — "the arm doesn't hit the right
-spot" — that are hard to spot by eye.
-
-### Visual regression (Playwright)
-
-For true *visual* fidelity — materials, lighting, shadows, exact pixels — a
-Playwright suite renders the real WebGL scene headlessly and diffs it against
-committed baseline images:
-
-```bash
-npm run test:visual          # compare against baseline screenshots
-npm run test:visual:update   # regenerate baselines after an intended change
-```
-
-[`tests/visual.spec.ts`](tests/visual.spec.ts) drives the scene through a
-deterministic hook (`?test` mode in [`src/main.ts`](src/main.ts) exposes
-`window.__useless.frameAt(seconds)` plus `window.__useless.phases`, the
-machine's own phase timeline). Each screenshot is taken at a genuine key point
-of the routine — resolved from the phase boundaries rather than guessed
-fractions of the runtime — so the captured states are exact and correctly
-labelled:
-
-| snapshot | animation moment |
-| --- | --- |
-| `idle` | lid closed, switch off |
-| `lid-open` | end of the lid-open phase |
-| `arm-reached` | arm out at the switch, still ON |
-| `switch-knocked` | lever pushed to OFF |
-| `arm-retracted` | arm withdrawn, lid still open |
-| `lid-closing` | mid lid-close |
-
-Each moment is captured from **several camera angles** (`hero`, `side`, `top`,
-and a switch `closeup`), set via `window.__useless.setView(name)`. A single
-angle can hide 3D overlaps — e.g. the arm intersecting the switch plate as it
-presses the lever — that are obvious from another, so the contact-critical
-frames (`arm-reached`, `switch-knocked`) are shot from extra viewpoints.
-
-There are no real-time races. WebGL is forced onto SwiftShader (software
-rendering) in [`playwright.config.ts`](playwright.config.ts) so output is
-reproducible across machines with different GPUs.
-
-> **Baselines are environment-specific.** Screenshots rendered on a different
-> OS/driver can differ by more than the diff threshold. For CI, regenerate
-> baselines inside the matching environment (e.g. the official
-> `mcr.microsoft.com/playwright` Docker image) so they compare apples to apples.
+> Want to eyeball a frame? `?test` mode in [`src/main.ts`](src/main.ts) exposes
+> `window.__useless.frameAt(seconds)` and `setView(name)` (`hero`, `side`,
+> `top`, `closeup`, …) so you can capture any moment from any angle with a
+> throwaway Playwright script — handy for spot checks without committing
+> baseline images.
 
 ## Deploy
 

@@ -1,180 +1,159 @@
 import * as THREE from "three";
+import * as CANNON from "cannon-es";
 
 // ----------------------------------------------------------------------------
-// Geometry
+// A physically simulated useless machine.
 //
-// Classic useless-machine layout: the toggle sits on the solid box top to the
-// RIGHT, with a hinged lid/opening to its LEFT. The arm pivots inside the box,
-// off to the side, sweeps up out of the opening and travels AIRBORNE (above the
-// top surface) over to the switch, then presses it from ON to OFF.
+// Instead of keyframing exact contact angles, the parts are rigid bodies:
+//  - a static base (walls + the top frame around the lid opening),
+//  - a dynamic toggle lever on a hinge, made BISTABLE by a restoring torque so
+//    it snaps to ON or OFF,
+//  - a dynamic arm on a hinge, driven by a motor to sweep out and back.
+// The arm KNOCKS the lever by colliding with it — the flip is a consequence of
+// the collision, not a scripted animation, so nothing can interpenetrate.
 //
-// Because the arm exits through the hole and is above the top by the time it
-// reaches the switch, its body never clips the solid deck between them. The
-// reach is off-axis, so contact slides along the lever rather than tracking the
-// tip exactly — natural for a "shove it over" motion.
+// The world runs without gravity: this is a tabletop mechanism, and the motor +
+// bistable detent define every resting state, so gravity would only add noise.
 // ----------------------------------------------------------------------------
 
-const SWITCH_POS = new THREE.Vector3(0.78, 1.2, 0);
-const LEVER_LEN = 0.34;
-const SWITCH_ON = 0.5; // lever tilt (rad) when ON — leans -X, toward the arm
-const SWITCH_OFF = -0.5; // lever tilt when OFF — leans +X, away from the arm
+const Z_AXIS = new CANNON.Vec3(0, 0, 1);
 
-/** World position of the lever tip for a given tilt angle. */
-const leverTip = (angle: number): THREE.Vector3 =>
-  new THREE.Vector3(
-    SWITCH_POS.x - LEVER_LEN * Math.sin(angle),
-    SWITCH_POS.y + LEVER_LEN * Math.cos(angle),
-    0,
-  );
-
-const TIP_ON = leverTip(SWITCH_ON);
-
-/** Arm pivot: inside the box, under the opening, to the LEFT of the switch. */
-const ARM_PIVOT = new THREE.Vector3(0.5, 0.85, 0);
-
-const armAngleFor = (p: THREE.Vector3): number =>
-  Math.atan2(p.y - ARM_PIVOT.y, p.x - ARM_PIVOT.x);
-
-/**
- * Finger reach (pivot → contact point). A small standoff keeps the fingertip
- * pressed against the lever's surface instead of buried inside it.
- */
-const CONTACT_STANDOFF = 0.06;
-const ARM_REACH = ARM_PIVOT.distanceTo(TIP_ON) - CONTACT_STANDOFF;
-
-/** Length of the fingertip nub at the end of the arm. */
-const FINGER_LEN = 0.16;
-/** Length of the arm bar (the fingertip extends it the rest of the way). */
-const ARM_BAR = ARM_REACH - FINGER_LEN;
-
-/**
- * Where, on the lever at tilt `angle`, the fingertip touches it (the point on
- * the lever segment at distance ARM_REACH from the pivot, nearest the tip).
- * Lets the contact slide down the lever as it is pushed past the arm's reach.
- */
-const leverContact = (angle: number): THREE.Vector3 => {
-  const base = SWITCH_POS;
-  const seg = leverTip(angle).sub(base); // base -> tip
-  const f = base.clone().sub(ARM_PIVOT);
-  const a = seg.dot(seg);
-  const b = 2 * f.dot(seg);
-  const c = f.dot(f) - ARM_REACH * ARM_REACH;
-  const disc = b * b - 4 * a * c;
-  if (disc < 0) return leverTip(angle); // unreachable; aim for the tip
-  const t = Math.min(1, Math.max(0, (-b + Math.sqrt(disc)) / (2 * a)));
-  return base.clone().add(seg.multiplyScalar(t));
-};
-
-const ARM_ON = armAngleFor(TIP_ON); // tip meets the raised (ON) lever tip
-const ARM_OFF = armAngleFor(leverContact(SWITCH_OFF)); // pressed to OFF
-const ARM_HIDDEN = Math.PI; // arm folded flat (-X), tucked inside the box
-
-/** Lid rotation when fully open. */
-const LID_OPEN = 1.95;
-
-/** Duration (seconds) of each animation phase, in order. */
-const PHASE_SECONDS = {
-  lidOpen: 0.4,
-  reach: 0.5,
-  knock: 0.4,
-  retract: 0.55,
-  lidClose: 0.4,
-} as const;
-
-// Top opening, framed by solid panels so the arm has a real hole to pass.
-// To the LEFT of the switch; its right lip nearly reaches the switch base so
-// the arm crosses the top within the hole.
+// Box shell.
+const TOP_Y = 1.2;
 const OPEN_X_MIN = -0.5;
-const OPEN_X_MAX = 0.62;
+const OPEN_X_MAX = 0.5;
 const OPEN_Z_HALF = 0.5;
 
-const easeInOut = (t: number): number =>
-  t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+// Switch: mounted at the right lip of the opening so the arm can reach it
+// straight up through the hole.
+const SWITCH_POS = new THREE.Vector3(0.6, TOP_Y, 0);
+const LEVER_LEN = 0.5;
+const LEVER_HALF = LEVER_LEN / 2;
+const SWITCH_ON = 0.5; // lever tilt (rad): +ve leans -X, over the opening
+const SWITCH_OFF = -0.5; // -ve leans +X, onto the deck
 
-const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+// Arm: pivots inside the box, under the opening.
+const ARM_PIVOT = new THREE.Vector3(-0.05, 0.5, 0);
+const ARM_LEN = 1.05;
+const ARM_HALF = ARM_LEN / 2;
+const ARM_HIDDEN = -2.3; // folded down inside the box
+const ARM_OUT = 1.5; // swept up through the hole, into the lever
 
-interface Phase {
-  duration: number;
-  update: (p: number) => void;
+const LID_OPEN = 1.95;
+
+/** A rendered group kept in sync with a physics body each frame. */
+interface Linked {
+  mesh: THREE.Object3D;
+  body: CANNON.Body;
 }
 
-/**
- * The useless machine: a wooden box with a toggle switch and a hidden arm.
- * Flip the switch ON and the lid opens, an arm reaches out, knocks the switch
- * back OFF, then retreats and the lid closes.
- */
+// Angle of the body's local +X axis in the XY plane (single-valued in our
+// range — avoids the quaternion double-cover that 2*atan2(z,w) suffers).
+const _basisX = new CANNON.Vec3(1, 0, 0);
+const _basisY = new CANNON.Vec3(0, 1, 0);
+const _x = new CANNON.Vec3();
+const _y = new CANNON.Vec3();
+const armAngleOf = (q: CANNON.Quaternion): number => {
+  q.vmult(_basisX, _x);
+  return Math.atan2(_x.y, _x.x);
+};
+// Lever tilt from its local +Y axis (0 = upright, +ve leans -X).
+const leverAngleOf = (q: CANNON.Quaternion): number => {
+  q.vmult(_basisY, _y);
+  return Math.atan2(-_y.x, _y.y);
+};
+
+const FIXED_DT = 1 / 120; // physics timestep
+
+type State = "idle" | "opening" | "extending" | "retracting" | "closing";
+
 export class UselessMachine {
   readonly root = new THREE.Group();
-  /** Meshes the raycaster should treat as "the switch" for click detection. */
   readonly interactive: THREE.Object3D[] = [];
+  readonly world = new CANNON.World({ gravity: new CANNON.Vec3(0, 0, 0) });
 
-  private readonly switchPivot = new THREE.Group();
+  private readonly base: CANNON.Body;
+  private readonly lever: CANNON.Body;
+  private readonly arm: CANNON.Body;
+  private readonly armHinge: CANNON.HingeConstraint;
   private readonly lidPivot = new THREE.Group();
-  private readonly armPivot = new THREE.Group();
+  private readonly links: Linked[] = [];
 
-  // Empty markers used to read exact world positions (rendering + tests).
-  private readonly fingerMarker = new THREE.Object3D(); // arm tip
-  private readonly tipMarker = new THREE.Object3D(); // lever tip
-
+  private state: State = "idle";
+  private stateTime = 0;
+  private lidAngleValue = 0;
   private isOn = false;
-  private sequence: Phase[] | null = null;
-  private phaseIndex = 0;
-  private elapsed = 0;
+  private accumulator = 0;
 
   constructor() {
-    this.buildBody();
-    this.buildLid();
-    this.buildSwitch();
-    this.buildArm();
+    this.world.broadphase = new CANNON.NaiveBroadphase();
+    const solver = new CANNON.GSSolver();
+    solver.iterations = 30;
+    this.world.solver = solver;
 
-    this.switchPivot.rotation.z = SWITCH_OFF;
-    this.armPivot.rotation.z = ARM_HIDDEN;
+    this.base = new CANNON.Body({ type: CANNON.Body.STATIC });
+    this.buildBody();
+    this.world.addBody(this.base);
+
+    this.lever = this.buildLever();
+    this.arm = this.buildArm();
+    this.armHinge = this.hinge(this.arm, ARM_PIVOT, new CANNON.Vec3(-ARM_HALF, 0, 0));
+    this.armHinge.enableMotor();
+    this.armHinge.setMotorMaxForce(18);
+
+    this.buildLid();
+    this.setLever(SWITCH_OFF);
+    this.setArm(ARM_HIDDEN);
+  }
+
+  // --- Construction --------------------------------------------------------
+
+  private addStaticBox(
+    w: number,
+    h: number,
+    d: number,
+    x: number,
+    y: number,
+    z: number,
+    mat: THREE.Material,
+  ): void {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.root.add(mesh);
+    this.base.addShape(
+      new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, d / 2)),
+      new CANNON.Vec3(x, y, z),
+    );
   }
 
   private buildBody(): void {
-    const bodyMat = new THREE.MeshStandardMaterial({
+    const mat = new THREE.MeshStandardMaterial({
       color: 0x7a5230,
       roughness: 0.75,
       metalness: 0.05,
     });
-    const add = (geo: THREE.BoxGeometry, x: number, y: number, z: number) => {
-      const m = new THREE.Mesh(geo, bodyMat);
-      m.position.set(x, y, z);
-      m.castShadow = true;
-      m.receiveShadow = true;
-      this.root.add(m);
-    };
+    // Bottom + four walls.
+    this.addStaticBox(3, 0.1, 2, 0, 0.05, 0, mat);
+    this.addStaticBox(0.1, 1.2, 2, 1.45, 0.6, 0, mat);
+    this.addStaticBox(0.1, 1.2, 2, -1.45, 0.6, 0, mat);
+    this.addStaticBox(3, 1.2, 0.1, 0, 0.6, 0.95, mat);
+    this.addStaticBox(3, 1.2, 0.1, 0, 0.6, -0.95, mat);
 
-    // Bottom and four walls (no solid top — the top is a frame around a hole).
-    add(new THREE.BoxGeometry(3, 0.1, 2), 0, 0.05, 0);
-    add(new THREE.BoxGeometry(0.1, 1.2, 2), 1.45, 0.6, 0);
-    add(new THREE.BoxGeometry(0.1, 1.2, 2), -1.45, 0.6, 0);
-    add(new THREE.BoxGeometry(3, 1.2, 0.1), 0, 0.6, 0.95);
-    add(new THREE.BoxGeometry(3, 1.2, 0.1), 0, 0.6, -0.95);
-
-    // Top frame leaving an opening at [OPEN_X_MIN, OPEN_X_MAX] x [-Zh, +Zh].
+    // Top frame leaving the opening.
     const topY = 1.175;
-    const leftW = OPEN_X_MIN - -1.5;
-    add(new THREE.BoxGeometry(leftW, 0.05, 2), -1.5 + leftW / 2, topY, 0);
+    const leftW = OPEN_X_MIN + 1.5;
+    this.addStaticBox(leftW, 0.05, 2, -1.5 + leftW / 2, topY, 0, mat);
     const rightW = 1.5 - OPEN_X_MAX;
-    add(new THREE.BoxGeometry(rightW, 0.05, 2), 1.5 - rightW / 2, topY, 0);
+    this.addStaticBox(rightW, 0.05, 2, 1.5 - rightW / 2, topY, 0, mat);
     const openW = OPEN_X_MAX - OPEN_X_MIN;
     const openCx = (OPEN_X_MIN + OPEN_X_MAX) / 2;
     const sideD = 1.0 - OPEN_Z_HALF;
-    add(
-      new THREE.BoxGeometry(openW, 0.05, sideD),
-      openCx,
-      topY,
-      OPEN_Z_HALF + sideD / 2,
-    );
-    add(
-      new THREE.BoxGeometry(openW, 0.05, sideD),
-      openCx,
-      topY,
-      -(OPEN_Z_HALF + sideD / 2),
-    );
+    this.addStaticBox(openW, 0.05, sideD, openCx, topY, OPEN_Z_HALF + sideD / 2, mat);
+    this.addStaticBox(openW, 0.05, sideD, openCx, topY, -(OPEN_Z_HALF + sideD / 2), mat);
 
-    // Dark liner across the cavity floor so the opening reads as depth.
+    // Dark cavity floor (visual only).
     const liner = new THREE.Mesh(
       new THREE.BoxGeometry(2.7, 0.04, 1.7),
       new THREE.MeshStandardMaterial({ color: 0x101012, roughness: 1 }),
@@ -184,18 +163,72 @@ export class UselessMachine {
     this.root.add(liner);
   }
 
+  private buildLever(): CANNON.Body {
+    // Mount plate (visual only).
+    const plate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.32, 0.06, 0.34),
+      new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.5, metalness: 0.3 }),
+    );
+    plate.position.set(SWITCH_POS.x, 1.22, 0);
+    plate.castShadow = true;
+    this.root.add(plate);
+    this.interactive.push(plate);
+
+    // The lever body, hinged at its base (SWITCH_POS).
+    const body = new CANNON.Body({ mass: 0.3 });
+    body.addShape(new CANNON.Box(new CANNON.Vec3(0.05, LEVER_HALF, 0.08)));
+    body.angularDamping = 0.6;
+    this.world.addBody(body);
+    this.hinge(body, SWITCH_POS, new CANNON.Vec3(0, -LEVER_HALF, 0));
+
+    const group = new THREE.Group();
+    const lever = new THREE.Mesh(
+      new THREE.BoxGeometry(0.09, LEVER_LEN, 0.16),
+      new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.4, metalness: 0.1 }),
+    );
+    lever.castShadow = true;
+    const knob = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 20, 16),
+      new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.3 }),
+    );
+    knob.position.set(0, LEVER_HALF, 0);
+    knob.castShadow = true;
+    group.add(lever, knob);
+    this.root.add(group);
+    this.interactive.push(lever, knob);
+    this.links.push({ mesh: group, body });
+    return body;
+  }
+
+  private buildArm(): CANNON.Body {
+    const body = new CANNON.Body({ mass: 1 });
+    body.addShape(new CANNON.Box(new CANNON.Vec3(ARM_HALF, 0.04, 0.065)));
+    body.addShape(
+      new CANNON.Box(new CANNON.Vec3(0.06, 0.1, 0.08)),
+      new CANNON.Vec3(ARM_HALF - 0.05, 0, 0),
+    );
+    body.angularDamping = 0.4;
+    this.world.addBody(body);
+
+    const mat = new THREE.MeshStandardMaterial({ color: 0xcfd2d6, roughness: 0.35, metalness: 0.6 });
+    const group = new THREE.Group();
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(ARM_LEN, 0.08, 0.13), mat);
+    const finger = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.2, 0.16), mat);
+    finger.position.set(ARM_HALF - 0.05, 0, 0);
+    bar.castShadow = true;
+    finger.castShadow = true;
+    group.add(bar, finger);
+    this.root.add(group);
+    this.links.push({ mesh: group, body });
+    return body;
+  }
+
   private buildLid(): void {
-    // Hinged at the opening's left edge; the far edge lifts up to open.
     this.lidPivot.position.set(OPEN_X_MIN, 1.205, 0);
-    const lidMat = new THREE.MeshStandardMaterial({
-      color: 0x8a6038,
-      roughness: 0.7,
-      metalness: 0.05,
-    });
     const openW = OPEN_X_MAX - OPEN_X_MIN;
     const lid = new THREE.Mesh(
       new THREE.BoxGeometry(openW, 0.05, OPEN_Z_HALF * 2 + 0.04),
-      lidMat,
+      new THREE.MeshStandardMaterial({ color: 0x8a6038, roughness: 0.7, metalness: 0.05 }),
     );
     lid.position.set(openW / 2, 0, 0);
     lid.castShadow = true;
@@ -204,235 +237,152 @@ export class UselessMachine {
     this.root.add(this.lidPivot);
   }
 
-  private buildSwitch(): void {
-    // Mounting plate, sitting on the solid box top beside (right of) the lid.
-    const plate = new THREE.Mesh(
-      new THREE.BoxGeometry(0.34, 0.06, 0.36),
-      new THREE.MeshStandardMaterial({
-        color: 0x1c1c1c,
-        roughness: 0.5,
-        metalness: 0.3,
-      }),
-    );
-    plate.position.set(SWITCH_POS.x, 1.22, 0);
-    plate.castShadow = true;
-    this.root.add(plate);
-    this.interactive.push(plate);
-
-    // The pivoting lever.
-    this.switchPivot.position.copy(SWITCH_POS);
-    const leverMat = new THREE.MeshStandardMaterial({
-      color: 0xcc2222,
-      roughness: 0.4,
-      metalness: 0.1,
+  private hinge(body: CANNON.Body, pivotWorld: THREE.Vector3, pivotLocal: CANNON.Vec3): CANNON.HingeConstraint {
+    const hc = new CANNON.HingeConstraint(this.base, body, {
+      pivotA: new CANNON.Vec3(pivotWorld.x, pivotWorld.y, pivotWorld.z),
+      axisA: Z_AXIS,
+      pivotB: pivotLocal,
+      axisB: Z_AXIS,
+      collideConnected: false,
     });
-    const lever = new THREE.Mesh(
-      new THREE.BoxGeometry(0.09, LEVER_LEN, 0.16),
-      leverMat,
-    );
-    lever.position.set(0, LEVER_LEN / 2, 0);
-    lever.castShadow = true;
-
-    // A pale knob so the toggle direction is easy to read.
-    const knob = new THREE.Mesh(
-      new THREE.SphereGeometry(0.09, 20, 16),
-      new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.3 }),
-    );
-    knob.position.set(0, LEVER_LEN, 0);
-    knob.castShadow = true;
-
-    this.tipMarker.position.set(0, LEVER_LEN, 0);
-
-    this.switchPivot.add(lever, knob, this.tipMarker);
-    this.root.add(this.switchPivot);
-    this.interactive.push(lever, knob);
+    this.world.addConstraint(hc);
+    return hc;
   }
 
-  private buildArm(): void {
-    // Pivots inside the box to the left of the switch; sweeps up through the
-    // opening and reaches over to the toggle.
-    this.armPivot.position.copy(ARM_PIVOT);
-    const armMat = new THREE.MeshStandardMaterial({
-      color: 0xcfd2d6,
-      roughness: 0.35,
-      metalness: 0.6,
-    });
-    const arm = new THREE.Mesh(
-      new THREE.BoxGeometry(ARM_BAR, 0.07, 0.13),
-      armMat,
+  /** Place the lever body at a tilt angle about its hinge. */
+  private setLever(angle: number): void {
+    const q = new CANNON.Quaternion().setFromAxisAngle(Z_AXIS, angle);
+    this.lever.quaternion.copy(q);
+    const dir = new CANNON.Vec3(-Math.sin(angle), Math.cos(angle), 0);
+    this.lever.position.set(
+      SWITCH_POS.x + dir.x * LEVER_HALF,
+      SWITCH_POS.y + dir.y * LEVER_HALF,
+      0,
     );
-    arm.position.set(ARM_BAR / 2, 0, 0);
-    arm.castShadow = true;
-
-    // The fingertip that presses the toggle: a pad on the arm's axis at the
-    // very end, pointing forward toward the switch. Staying on-axis keeps it
-    // above the switch plate (the contact point is high on the lever) instead
-    // of dipping into it.
-    const finger = new THREE.Mesh(
-      new THREE.BoxGeometry(FINGER_LEN, 0.13, 0.16),
-      armMat,
-    );
-    finger.position.set(ARM_BAR + FINGER_LEN / 2, 0, 0);
-    finger.castShadow = true;
-
-    this.fingerMarker.position.set(ARM_REACH, 0, 0);
-
-    this.armPivot.add(arm, finger, this.fingerMarker);
-    this.root.add(this.armPivot);
+    this.lever.velocity.setZero();
+    this.lever.angularVelocity.setZero();
   }
 
-  // --- State queries (used by the render loop and by tests) ----------------
+  /** Place the arm body at a sweep angle about its hinge. */
+  private setArm(angle: number): void {
+    const q = new CANNON.Quaternion().setFromAxisAngle(Z_AXIS, angle);
+    this.arm.quaternion.copy(q);
+    const dir = new CANNON.Vec3(Math.cos(angle), Math.sin(angle), 0);
+    this.arm.position.set(
+      ARM_PIVOT.x + dir.x * ARM_HALF,
+      ARM_PIVOT.y + dir.y * ARM_HALF,
+      0,
+    );
+    this.arm.velocity.setZero();
+    this.arm.angularVelocity.setZero();
+  }
 
-  /** Whether the machine is mid-animation and should ignore new clicks. */
+  // --- State queries -------------------------------------------------------
+
   get isBusy(): boolean {
-    return this.sequence !== null;
+    return this.state !== "idle";
   }
-
   get switchAngle(): number {
-    return this.switchPivot.rotation.z;
+    return leverAngleOf(this.lever.quaternion);
   }
-
   get armAngle(): number {
-    return this.armPivot.rotation.z;
+    return armAngleOf(this.arm.quaternion);
   }
-
   get lidAngle(): number {
-    return this.lidPivot.rotation.z;
+    return this.lidAngleValue;
   }
 
-  /** World position of the arm's finger tip. */
-  fingerWorld(target = new THREE.Vector3()): THREE.Vector3 {
-    this.root.updateMatrixWorld(true);
-    return this.fingerMarker.getWorldPosition(target);
-  }
+  // --- Simulation ----------------------------------------------------------
 
-  /** World position of the switch lever's tip. */
-  switchTipWorld(target = new THREE.Vector3()): THREE.Vector3 {
-    this.root.updateMatrixWorld(true);
-    return this.tipMarker.getWorldPosition(target);
-  }
-
-  /** World position of the switch lever's base (its pivot). */
-  switchBaseWorld(target = new THREE.Vector3()): THREE.Vector3 {
-    this.root.updateMatrixWorld(true);
-    return this.switchPivot.getWorldPosition(target);
-  }
-
-  /** World position of the arm's pivot. */
-  armPivotWorld(target = new THREE.Vector3()): THREE.Vector3 {
-    this.root.updateMatrixWorld(true);
-    return this.armPivot.getWorldPosition(target);
-  }
-
-  // --- Animation ------------------------------------------------------------
-
-  /**
-   * Call when the user clicks the switch. Flips it ON and kicks off the
-   * lid → arm → flip-back → retract → close routine. No-op while busy.
-   */
   activate(): void {
     if (this.isBusy || this.isOn) return;
     this.isOn = true;
-    this.switchPivot.rotation.z = SWITCH_ON;
-    this.startSequence();
+    this.setLever(SWITCH_ON);
+    this.state = "opening";
+    this.stateTime = 0;
   }
 
-  /** Total length of the activation sequence, in seconds. */
-  static get sequenceSeconds(): number {
-    return Object.values(PHASE_SECONDS).reduce((a, b) => a + b, 0);
+  /** Drive the arm motor toward a target hinge angle (simple P controller). */
+  private driveArm(target: number): void {
+    // Motor speed is about the hinge axis; with base as body A the sign is
+    // inverted relative to our angle convention, hence the leading minus.
+    const err = target - this.armAngle;
+    const speed = Math.max(-4, Math.min(4, -err * 8));
+    this.armHinge.setMotorSpeed(speed);
   }
 
-  /**
-   * The animation phases with their absolute start/end times (seconds). Lets
-   * callers (e.g. visual tests) seek to the exact key moments of the routine
-   * rather than guessing at fractions of the total runtime.
-   */
-  static get phases(): ReadonlyArray<{
-    name: string;
-    start: number;
-    end: number;
-    mid: number;
-  }> {
-    let t = 0;
-    return Object.entries(PHASE_SECONDS).map(([name, duration]) => {
-      const start = t;
-      t += duration;
-      return { name, start, end: t, mid: start + duration / 2 };
-    });
+  /** Bistable detent: torque that snaps the lever to whichever side it's on. */
+  private detentLever(): void {
+    const a = this.switchAngle;
+    const target = a >= 0 ? SWITCH_ON : SWITCH_OFF;
+    const torque = -6 * (a - target) - 0.5 * this.lever.angularVelocity.z;
+    this.lever.torque.z += torque;
   }
 
-  private startSequence(): void {
-    this.sequence = [
-      // Open the lid.
-      {
-        duration: PHASE_SECONDS.lidOpen,
-        update: (p) => {
-          this.lidPivot.rotation.z = lerp(0, LID_OPEN, easeInOut(p));
-        },
-      },
-      // Reach out: swing the arm up to where it meets the ON toggle tip.
-      {
-        duration: PHASE_SECONDS.reach,
-        update: (p) => {
-          this.armPivot.rotation.z = lerp(ARM_HIDDEN, ARM_ON, easeInOut(p));
-        },
-      },
-      // Knock it: arm and switch advance on a shared progress so the finger
-      // stays on the toggle tip as it carries it from ON to OFF.
-      {
-        duration: PHASE_SECONDS.knock,
-        update: (p) => {
-          const e = easeInOut(p);
-          this.armPivot.rotation.z = lerp(ARM_ON, ARM_OFF, e);
-          this.switchPivot.rotation.z = lerp(SWITCH_ON, SWITCH_OFF, e);
-        },
-      },
-      // Retract the arm back inside.
-      {
-        duration: PHASE_SECONDS.retract,
-        update: (p) => {
-          this.armPivot.rotation.z = lerp(ARM_OFF, ARM_HIDDEN, easeInOut(p));
-        },
-      },
-      // Close the lid.
-      {
-        duration: PHASE_SECONDS.lidClose,
-        update: (p) => {
-          this.lidPivot.rotation.z = lerp(LID_OPEN, 0, easeInOut(p));
-        },
-      },
-    ];
-    this.phaseIndex = 0;
-    this.elapsed = 0;
+  /** Hard end-stops at ON / OFF so the lever can't fling past its travel. */
+  private clampLever(): void {
+    const a = this.switchAngle;
+    if (a > SWITCH_ON) this.setLever(SWITCH_ON);
+    else if (a < SWITCH_OFF) this.setLever(SWITCH_OFF);
   }
 
-  /** Advance the animation. `dt` is seconds since the last frame. */
   update(dt: number): void {
-    if (!this.sequence) return;
+    dt = Math.min(dt, 1 / 30);
+    this.runState(dt);
 
-    this.elapsed += dt;
-    let phase = this.sequence[this.phaseIndex];
-
-    // Roll forward through any phases this frame completed. Correct for
-    // multi-phase skips, but the caller's dt clamp (<= 0.05s, below the
-    // shortest 0.4s phase) means in practice at most one phase ends per frame.
-    while (phase && this.elapsed >= phase.duration) {
-      phase.update(1);
-      this.elapsed -= phase.duration;
-      this.phaseIndex++;
-      phase = this.sequence[this.phaseIndex];
+    // Fixed-timestep loop, hand-rolled rather than world.step's accumulator
+    // overload (which consults performance.now() and can drop sub-steps —
+    // nondeterministic). The detent torque is re-applied each step because
+    // cannon-es clears body.torque after integrating.
+    this.accumulator = Math.min(this.accumulator + dt, FIXED_DT * 8);
+    while (this.accumulator >= FIXED_DT) {
+      this.detentLever();
+      this.world.step(FIXED_DT);
+      this.clampLever();
+      this.accumulator -= FIXED_DT;
     }
 
-    if (!phase) {
-      // Sequence finished; settle to a clean idle state.
-      this.lidPivot.rotation.z = 0;
-      this.armPivot.rotation.z = ARM_HIDDEN;
-      this.switchPivot.rotation.z = SWITCH_OFF;
-      this.sequence = null;
-      this.isOn = false;
-      return;
+    // CANNON Vec3/Quaternion are structurally {x,y,z[,w]} so THREE's copy()
+    // reads them directly.
+    for (const { mesh, body } of this.links) {
+      mesh.position.copy(body.position as unknown as THREE.Vector3);
+      mesh.quaternion.copy(body.quaternion as unknown as THREE.Quaternion);
     }
+    this.lidPivot.rotation.z = this.lidAngleValue;
+  }
 
-    phase.update(this.elapsed / phase.duration);
+  private runState(dt: number): void {
+    this.stateTime += dt;
+    switch (this.state) {
+      case "idle":
+        this.driveArm(ARM_HIDDEN);
+        break;
+      case "opening":
+        this.lidAngleValue = Math.min(LID_OPEN, this.lidAngleValue + dt * 6);
+        this.driveArm(ARM_HIDDEN);
+        if (this.lidAngleValue >= LID_OPEN) this.go("extending");
+        break;
+      case "extending":
+        this.driveArm(ARM_OUT);
+        if (this.armAngle > ARM_OUT - 0.15 || this.stateTime > 1.6) this.go("retracting");
+        break;
+      case "retracting":
+        this.driveArm(ARM_HIDDEN);
+        if (this.armAngle < ARM_HIDDEN + 0.2 || this.stateTime > 1.6) this.go("closing");
+        break;
+      case "closing":
+        this.lidAngleValue = Math.max(0, this.lidAngleValue - dt * 6);
+        this.driveArm(ARM_HIDDEN);
+        if (this.lidAngleValue <= 0) {
+          this.go("idle");
+          this.isOn = false;
+        }
+        break;
+    }
+  }
+
+  private go(state: State): void {
+    this.state = state;
+    this.stateTime = 0;
   }
 }

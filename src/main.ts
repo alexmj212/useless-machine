@@ -161,8 +161,6 @@ function setupTestMode(): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).__useless = {
     ready: true,
-    sequenceSeconds: UselessMachine.sequenceSeconds,
-    phases: UselessMachine.phases,
     views: Object.keys(views),
     setView,
     frameAt,

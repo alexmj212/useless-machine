@@ -69,6 +69,12 @@ labelled:
 | `arm-retracted` | arm withdrawn, lid still open |
 | `lid-closing` | mid lid-close |
 
+Each moment is captured from **several camera angles** (`hero`, `side`, `top`,
+and a switch `closeup`), set via `window.__useless.setView(name)`. A single
+angle can hide 3D overlaps — e.g. the arm intersecting the switch plate as it
+presses the lever — that are obvious from another, so the contact-critical
+frames (`arm-reached`, `switch-knocked`) are shot from extra viewpoints.
+
 There are no real-time races. WebGL is forced onto SwiftShader (software
 rendering) in [`playwright.config.ts`](playwright.config.ts) so output is
 reproducible across machines with different GPUs.

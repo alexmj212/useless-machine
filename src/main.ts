@@ -117,6 +117,23 @@ function setupInteractive(): void {
 function setupTestMode(): void {
   if (hint) hint.style.display = "none";
 
+  // Named camera angles so visual tests can inspect each moment from several
+  // viewpoints — overlaps/clipping that one angle hides are obvious in another.
+  const views: Record<string, { pos: [number, number, number]; target: [number, number, number] }> = {
+    hero: { pos: [4.5, 3.5, 5.5], target: [0, 1, 0] },
+    front: { pos: [0.4, 2.4, 7], target: [0.4, 1.15, 0] },
+    side: { pos: [6.8, 2.6, 1.4], target: [0.6, 1.25, 0] },
+    top: { pos: [0.5, 8.5, 0.8], target: [0.5, 1.0, 0] },
+    closeup: { pos: [2.4, 2.2, 2.6], target: [0.78, 1.4, 0] },
+  };
+
+  const setView = (name: string): void => {
+    const v = views[name] ?? views.hero;
+    camera.position.set(...v.pos);
+    controls.target.set(...v.target);
+    render();
+  };
+
   const reset = (): void => {
     scene.remove(machine.root);
     machine = new UselessMachine();
@@ -139,12 +156,15 @@ function setupTestMode(): void {
     render();
   };
 
+  setView("hero");
   idle();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).__useless = {
     ready: true,
     sequenceSeconds: UselessMachine.sequenceSeconds,
     phases: UselessMachine.phases,
+    views: Object.keys(views),
+    setView,
     frameAt,
     idle,
   };

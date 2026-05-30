@@ -35,13 +35,22 @@ const ARM_PIVOT = new THREE.Vector3(0.5, 0.85, 0);
 const armAngleFor = (p: THREE.Vector3): number =>
   Math.atan2(p.y - ARM_PIVOT.y, p.x - ARM_PIVOT.x);
 
-/** Arm length is set so the tip reaches the ON lever tip. */
-const ARM_LEN = ARM_PIVOT.distanceTo(TIP_ON);
+/**
+ * Finger reach (pivot → contact point). A small standoff keeps the fingertip
+ * pressed against the lever's surface instead of buried inside it.
+ */
+const CONTACT_STANDOFF = 0.06;
+const ARM_REACH = ARM_PIVOT.distanceTo(TIP_ON) - CONTACT_STANDOFF;
+
+/** Length of the fingertip nub at the end of the arm. */
+const FINGER_LEN = 0.16;
+/** Length of the arm bar (the fingertip extends it the rest of the way). */
+const ARM_BAR = ARM_REACH - FINGER_LEN;
 
 /**
- * Where, on the lever at tilt `angle`, the arm tip touches it (the point on the
- * lever segment at distance ARM_LEN from the pivot, nearest the tip). Lets the
- * contact slide down the lever as it is pushed past the arm's reach.
+ * Where, on the lever at tilt `angle`, the fingertip touches it (the point on
+ * the lever segment at distance ARM_REACH from the pivot, nearest the tip).
+ * Lets the contact slide down the lever as it is pushed past the arm's reach.
  */
 const leverContact = (angle: number): THREE.Vector3 => {
   const base = SWITCH_POS;
@@ -49,7 +58,7 @@ const leverContact = (angle: number): THREE.Vector3 => {
   const f = base.clone().sub(ARM_PIVOT);
   const a = seg.dot(seg);
   const b = 2 * f.dot(seg);
-  const c = f.dot(f) - ARM_LEN * ARM_LEN;
+  const c = f.dot(f) - ARM_REACH * ARM_REACH;
   const disc = b * b - 4 * a * c;
   if (disc < 0) return leverTip(angle); // unreachable; aim for the tip
   const t = Math.min(1, Math.max(0, (-b + Math.sqrt(disc)) / (2 * a)));
@@ -249,20 +258,24 @@ export class UselessMachine {
       metalness: 0.6,
     });
     const arm = new THREE.Mesh(
-      new THREE.BoxGeometry(ARM_LEN, 0.07, 0.13),
+      new THREE.BoxGeometry(ARM_BAR, 0.07, 0.13),
       armMat,
     );
-    arm.position.set(ARM_LEN / 2, 0, 0);
+    arm.position.set(ARM_BAR / 2, 0, 0);
     arm.castShadow = true;
 
-    // The finger nub that presses the toggle, at the very end of the arm.
-    // It sits on the leading (-Y) side so it points toward the switch as the
-    // arm reaches over — i.e. the arm is rolled 180° about its long axis.
-    const finger = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.2, 0.14), armMat);
-    finger.position.set(ARM_LEN - 0.04, -0.07, 0);
+    // The fingertip that presses the toggle: a pad on the arm's axis at the
+    // very end, pointing forward toward the switch. Staying on-axis keeps it
+    // above the switch plate (the contact point is high on the lever) instead
+    // of dipping into it.
+    const finger = new THREE.Mesh(
+      new THREE.BoxGeometry(FINGER_LEN, 0.13, 0.16),
+      armMat,
+    );
+    finger.position.set(ARM_BAR + FINGER_LEN / 2, 0, 0);
     finger.castShadow = true;
 
-    this.fingerMarker.position.set(ARM_LEN, 0, 0);
+    this.fingerMarker.position.set(ARM_REACH, 0, 0);
 
     this.armPivot.add(arm, finger, this.fingerMarker);
     this.root.add(this.armPivot);

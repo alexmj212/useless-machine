@@ -39,10 +39,31 @@ top surface within the lid opening (no clipping the solid frame), and the
 machine settles back to a clean idle state.
 
 This catches geometry/animation regressions — "the arm doesn't hit the right
-spot" — that are hard to spot by eye. For true *visual* fidelity (materials,
-lighting, exact pixels) the complementary approach is headless screenshot tests
-(e.g. Playwright rendering the scene at fixed animation timestamps and diffing
-against golden images); that lives outside this fast unit suite.
+spot" — that are hard to spot by eye.
+
+### Visual regression (Playwright)
+
+For true *visual* fidelity — materials, lighting, shadows, exact pixels — a
+Playwright suite renders the real WebGL scene headlessly and diffs it against
+committed baseline images:
+
+```bash
+npm run test:visual          # compare against baseline screenshots
+npm run test:visual:update   # regenerate baselines after an intended change
+```
+
+[`tests/visual.spec.ts`](tests/visual.spec.ts) drives the scene through a
+deterministic hook (`?test` mode in [`src/main.ts`](src/main.ts) exposes
+`window.__useless.frameAt(seconds)`), so each screenshot captures an exact
+animation moment — idle, lid opening, arm reaching, knock/contact, retracting,
+closing — with no real-time races. WebGL is forced onto SwiftShader (software
+rendering) in [`playwright.config.ts`](playwright.config.ts) so output is
+reproducible across machines with different GPUs.
+
+> **Baselines are environment-specific.** Screenshots rendered on a different
+> OS/driver can differ by more than the diff threshold. For CI, regenerate
+> baselines inside the matching environment (e.g. the official
+> `mcr.microsoft.com/playwright` Docker image) so they compare apples to apples.
 
 ## Deploy
 

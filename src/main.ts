@@ -3,6 +3,10 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { UselessMachine } from "./UselessMachine.js";
 import "./style.css";
 
+// Deterministic mode for visual tests: time is driven by the test, not a clock,
+// and the drawing buffer is preserved so screenshots capture the rendered frame.
+const testMode = new URLSearchParams(location.search).has("test");
+
 const app = document.getElementById("app")!;
 const hint = document.getElementById("hint");
 
@@ -16,16 +20,20 @@ const camera = new THREE.PerspectiveCamera(
   100,
 );
 camera.position.set(4.5, 3.5, 5.5);
+camera.lookAt(0, 1, 0);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  preserveDrawingBuffer: testMode,
+});
+renderer.setPixelRatio(testMode ? 1 : Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 app.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
+controls.enableDamping = !testMode;
 controls.target.set(0, 1, 0);
 controls.maxPolarAngle = Math.PI / 2 - 0.05;
 controls.minDistance = 3;
@@ -59,24 +67,13 @@ ground.receiveShadow = true;
 scene.add(ground);
 
 // The machine.
-const machine = new UselessMachine();
+let machine = new UselessMachine();
 scene.add(machine.root);
 
-// Click-to-flip via raycasting against the switch.
-const raycaster = new THREE.Raycaster();
-const pointer = new THREE.Vector2();
-
-function onClick(event: MouseEvent): void {
-  pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
-  pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
-  raycaster.setFromCamera(pointer, camera);
-  const hits = raycaster.intersectObjects(machine.interactive, false);
-  if (hits.length > 0 && !machine.isBusy) {
-    machine.activate();
-    if (hint) hint.style.opacity = "0";
-  }
+function render(): void {
+  controls.update();
+  renderer.render(scene, camera);
 }
-renderer.domElement.addEventListener("click", onClick);
 
 window.addEventListener("resize", () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -84,11 +81,70 @@ window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-const clock = new THREE.Clock();
-function animate(): void {
-  const dt = Math.min(clock.getDelta(), 0.05);
-  machine.update(dt);
-  controls.update();
-  renderer.render(scene, camera);
+if (testMode) {
+  setupTestMode();
+} else {
+  setupInteractive();
 }
-renderer.setAnimationLoop(animate);
+
+/** Live mode: click to flip, real-time animation loop. */
+function setupInteractive(): void {
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+
+  renderer.domElement.addEventListener("click", (event: MouseEvent) => {
+    pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+    pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObjects(machine.interactive, false);
+    if (hits.length > 0 && !machine.isBusy) {
+      machine.activate();
+      if (hint) hint.style.opacity = "0";
+    }
+  });
+
+  const clock = new THREE.Clock();
+  renderer.setAnimationLoop(() => {
+    machine.update(Math.min(clock.getDelta(), 0.05));
+    render();
+  });
+}
+
+/**
+ * Test mode: expose a hook so visual tests can render an exact animation
+ * moment deterministically (no real-time clock, no race conditions).
+ */
+function setupTestMode(): void {
+  if (hint) hint.style.display = "none";
+
+  const reset = (): void => {
+    scene.remove(machine.root);
+    machine = new UselessMachine();
+    scene.add(machine.root);
+  };
+
+  // Replay the sequence from idle and stop exactly `seconds` in.
+  const frameAt = (seconds: number): void => {
+    reset();
+    machine.activate();
+    const step = 1 / 120;
+    for (let t = 0; t < seconds; t += step) {
+      machine.update(Math.min(step, seconds - t));
+    }
+    render();
+  };
+
+  const idle = (): void => {
+    reset();
+    render();
+  };
+
+  idle();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (window as any).__useless = {
+    ready: true,
+    sequenceSeconds: UselessMachine.sequenceSeconds,
+    frameAt,
+    idle,
+  };
+}

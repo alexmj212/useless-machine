@@ -54,6 +54,15 @@ const ARM_Z = 0.18;
 /** Lid rotation when fully open. */
 const LID_OPEN = 1.95;
 
+/** Duration (seconds) of each animation phase, in order. */
+const PHASE_SECONDS = {
+  lidOpen: 0.4,
+  reach: 0.5,
+  knock: 0.4,
+  retract: 0.55,
+  lidClose: 0.4,
+} as const;
+
 // Top opening, framed by solid panels so the arm has a real hole to pass.
 // Wide enough on +X to contain every point where the arm crosses the top.
 const OPEN_X_MIN = -0.6;
@@ -307,18 +316,23 @@ export class UselessMachine {
     this.startSequence();
   }
 
+  /** Total length of the activation sequence, in seconds. */
+  static get sequenceSeconds(): number {
+    return Object.values(PHASE_SECONDS).reduce((a, b) => a + b, 0);
+  }
+
   private startSequence(): void {
     this.sequence = [
       // Open the lid.
       {
-        duration: 0.4,
+        duration: PHASE_SECONDS.lidOpen,
         update: (p) => {
           this.lidPivot.rotation.z = lerp(0, LID_OPEN, easeInOut(p));
         },
       },
       // Reach out: swing the arm up to where it meets the ON toggle tip.
       {
-        duration: 0.5,
+        duration: PHASE_SECONDS.reach,
         update: (p) => {
           this.armPivot.rotation.z = lerp(ARM_HIDDEN, ARM_ON, easeInOut(p));
         },
@@ -326,7 +340,7 @@ export class UselessMachine {
       // Knock it: arm and switch advance on a shared progress so the finger
       // stays on the toggle tip as it carries it from ON to OFF.
       {
-        duration: 0.4,
+        duration: PHASE_SECONDS.knock,
         update: (p) => {
           const e = easeInOut(p);
           this.armPivot.rotation.z = lerp(ARM_ON, ARM_OFF, e);
@@ -335,14 +349,14 @@ export class UselessMachine {
       },
       // Retract the arm back inside.
       {
-        duration: 0.55,
+        duration: PHASE_SECONDS.retract,
         update: (p) => {
           this.armPivot.rotation.z = lerp(ARM_OFF, ARM_HIDDEN, easeInOut(p));
         },
       },
       // Close the lid.
       {
-        duration: 0.4,
+        duration: PHASE_SECONDS.lidClose,
         update: (p) => {
           this.lidPivot.rotation.z = lerp(LID_OPEN, 0, easeInOut(p));
         },

@@ -5,8 +5,15 @@ import {
   SWITCH_ON,
   SWITCH_OFF,
   ARM_OUT,
+  FIXED_DT,
   type DebugPart,
 } from "./UselessMachine.js";
+import {
+  obbPenetrationDepth,
+  sweptThrough,
+  type OBB2D,
+  type Vec2,
+} from "./contact-checks.js";
 
 // ----------------------------------------------------------------------------
 // Debug menu: an on-screen instrument panel for diagnosing the animation.
@@ -52,6 +59,8 @@ export interface DebugApi {
     position: { x: number; y: number; z: number };
     aabb: { min: { x: number; y: number; z: number }; max: { x: number; y: number; z: number } };
   }[];
+  /** Expected-contact verification + pass-through / tunnelling findings. */
+  getContactReport: () => ContactReport;
   clearLog: () => void;
   pause: () => void;
   play: () => void;
@@ -64,6 +73,7 @@ export interface DebugApi {
   activate: () => void;
   setCollisionBoxes: (on: boolean) => void;
   setPivots: (on: boolean) => void;
+  setContactPoints: (on: boolean) => void;
   open: () => void;
   close: () => void;
 }
@@ -75,6 +85,50 @@ interface LogEntry {
   msg: string;
 }
 
+interface XYZ {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** A contact location we assert the mechanism must hit during the routine. */
+interface ExpectedContact {
+  name: string;
+  /** Phases during which this contact is allowed to count. */
+  during: string[];
+  /** Where, in world space, the arm should strike the lever. */
+  point: XYZ;
+  /** Distance (m) an actual contact may be from `point` and still count. */
+  tolerance: number;
+}
+
+/** A real contact the solver produced, as reported by cannon-es. */
+interface ContactRecord {
+  point: XYZ;
+  normal: XYZ;
+  phase: string;
+  phaseTime: number;
+}
+
+/** Verdict for one ExpectedContact after a run. */
+interface ExpectedResult {
+  name: string;
+  expectedPoint: XYZ;
+  tolerance: number;
+  satisfied: boolean;
+  closestDistance: number;
+  observedPoint: XYZ | null;
+}
+
+interface ContactReport {
+  expected: ExpectedResult[];
+  contactPoints: ContactRecord[];
+  /** Deepest arm↔lever overlap seen (OBB SAT). Small = a clean tap. */
+  maxPenetrationDepth: number;
+  passThrough: boolean;
+  tunnelEvents: number;
+}
+
 interface Telemetry {
   phase: string;
   phaseTime: number;
@@ -84,6 +138,8 @@ interface Telemetry {
   lidAngle: number;
   /** Signed arm↔lever clearance: +ve = gap, −ve = interpenetration (approx). */
   armLeverGap: number;
+  /** Precise arm↔lever overlap depth (OBB SAT); 0 when separated. */
+  penetration: number;
   activeContacts: string[];
   timeScale: number;
   paused: boolean;
@@ -103,8 +159,25 @@ const KEYPOINTS: { name: string; t: number }[] = [
 ];
 
 const TIME_SCALES = [0.1, 0.25, 0.5, 1, 2];
-const SEEK_STEP = 1 / 120;
+// Seek one physics sub-step at a time so contact sampling sees every sub-step.
+const SEEK_STEP = FIXED_DT;
 const LOG_CAP = 500;
+
+// Contacts we assert the routine must produce. Calibrated from the real contact
+// points of a clean knock (observed ~0.07 m away); tolerance is tight enough
+// that a real miss or a hit on the wrong feature fails.
+const EXPECTED_CONTACTS: ExpectedContact[] = [
+  {
+    name: "arm-knocks-lever",
+    during: ["extending", "retracting"],
+    point: { x: 0.5, y: 1.3, z: 0 },
+    tolerance: 0.15,
+  },
+];
+
+// Arm↔lever overlap (OBB SAT, m) beyond which it's a pass-through, not a tap.
+// Sits above a clean knock (~0.06) and below the old plow-through bug (~0.15).
+const PASS_THROUGH_DEPTH = 0.1;
 
 const PART_COLORS: Record<string, number> = {
   base: 0x4a90d9,
@@ -133,7 +206,10 @@ export class DebugMenu {
     baseColor: number;
   }[] = [];
   private readonly pivotMarkers: THREE.Mesh[] = [];
+  private readonly expectedMarkers: THREE.Mesh[] = [];
+  private actualMarker!: THREE.Mesh;
   private showCollision = false;
+  private showContactPoints = false;
   private flashContacts = true;
 
   // Contacts + invariants.
@@ -149,6 +225,14 @@ export class DebugMenu {
   private readonly log: LogEntry[] = [];
   private readonly throttle = new Map<string, number>();
 
+  // Expected-contact + pass-through tracking (reset each run in attach()).
+  private expectedResults: ExpectedResult[] = [];
+  private contactRecords: ContactRecord[] = [];
+  private maxPenetration = 0;
+  private passThrough = false;
+  private tunnelEvents = 0;
+  private prevFingerTip: Vec2 | null = null;
+
   // DOM.
   private root!: HTMLDivElement;
   private toggleBtn!: HTMLButtonElement;
@@ -161,6 +245,7 @@ export class DebugMenu {
   private pauseBtn!: HTMLButtonElement;
   private collisionToggle!: HTMLInputElement;
   private pivotToggle!: HTMLInputElement;
+  private contactToggle!: HTMLInputElement;
 
   private readonly keyHandler = (e: KeyboardEvent): void => {
     if (e.key === "d" || e.key === "D") {
@@ -173,6 +258,7 @@ export class DebugMenu {
     this.machine = host.getMachine();
     this.host.scene.add(this.overlay);
     this.buildPivotMarkers();
+    this.buildContactMarkers();
     this.attach(this.machine);
     this.buildDom();
     this.exposeApi();
@@ -193,7 +279,7 @@ export class DebugMenu {
     } else if (!this.paused) {
       simDt = realDt * this.timeScale;
     }
-    if (simDt > 0) this.machine.update(simDt);
+    if (simDt > 0) this.machine.update(simDt); // contacts sampled via postStep
 
     this.detectPhaseChange();
     this.checkInvariants();
@@ -212,10 +298,31 @@ export class DebugMenu {
     this.activeContacts.clear();
     this.armTouchedLever = false;
     this.lastPhase = machine.phase;
+    this.resetContactTracking();
     machine.world.addEventListener("beginContact", this.onBeginContact);
     machine.world.addEventListener("endContact", this.onEndContact);
+    // Sample contacts on every physics sub-step (update() may run several per
+    // call) so brief contacts and the deepest penetration are never skipped.
+    machine.world.addEventListener("postStep", this.onPostStep);
     this.currentWorld = machine.world;
     this.buildWireframes();
+  }
+
+  /** Start a fresh expected-contact / pass-through ledger for a new run. */
+  private resetContactTracking(): void {
+    this.expectedResults = EXPECTED_CONTACTS.map((s) => ({
+      name: s.name,
+      expectedPoint: { ...s.point },
+      tolerance: s.tolerance,
+      satisfied: false,
+      closestDistance: Infinity,
+      observedPoint: null,
+    }));
+    this.contactRecords = [];
+    this.maxPenetration = 0;
+    this.passThrough = false;
+    this.tunnelEvents = 0;
+    this.prevFingerTip = null;
   }
 
   /** Drop contact listeners from the current world before it is discarded. */
@@ -223,8 +330,13 @@ export class DebugMenu {
     if (!this.currentWorld) return;
     this.currentWorld.removeEventListener("beginContact", this.onBeginContact);
     this.currentWorld.removeEventListener("endContact", this.onEndContact);
+    this.currentWorld.removeEventListener("postStep", this.onPostStep);
     this.currentWorld = null;
   }
+
+  private onPostStep = (): void => {
+    this.sampleContacts();
+  };
 
   private rebuildMachine(): UselessMachine {
     this.detachListeners();
@@ -237,6 +349,14 @@ export class DebugMenu {
   dispose(): void {
     window.removeEventListener("keydown", this.keyHandler);
     this.detachListeners();
+    for (const w of this.wireframes) {
+      w.line.geometry.dispose();
+      (w.line.material as THREE.Material).dispose();
+    }
+    for (const m of [...this.pivotMarkers, ...this.expectedMarkers, this.actualMarker]) {
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    }
     this.host.scene.remove(this.overlay);
   }
 
@@ -295,13 +415,27 @@ export class DebugMenu {
       }
     }
 
-    // Back to rest: did we actually flip the switch off?
-    if (phase === "idle" && this.machine.switchAngle > 0) {
-      this.error(
-        "still-on",
-        `routine finished but switch is still ON (${this.machine.switchAngle.toFixed(2)} rad) ` +
-          "— the machine failed to flip itself off",
-      );
+    // Back to rest: did we actually flip the switch off, and did every contact
+    // we expect actually happen near where it should?
+    if (phase === "idle") {
+      if (this.machine.switchAngle > 0) {
+        this.error(
+          "still-on",
+          `routine finished but switch is still ON (${this.machine.switchAngle.toFixed(2)} rad) ` +
+            "— the machine failed to flip itself off",
+        );
+      }
+      for (const r of this.expectedResults) {
+        if (r.satisfied) continue;
+        const closest = isFinite(r.closestDistance)
+          ? `${r.closestDistance.toFixed(3)} m`
+          : "no contact at all";
+        this.error(
+          "expected-" + r.name,
+          `expected contact "${r.name}" never satisfied — closest approach ${closest} ` +
+            `(tolerance ${r.tolerance} m)`,
+        );
+      }
     }
 
     this.lastPhase = phase;
@@ -374,6 +508,152 @@ export class DebugMenu {
     return { min, max };
   }
 
+  // --- Precise contact analysis (expected points + pass-through) ------------
+  //
+  // NB: the OBB helpers assume each shape has identity local orientation (true
+  // here — only body offsets are non-trivial). A rotated shape would need that
+  // folded into the angle.
+
+  /** The body's rotation about Z (its planar orientation). */
+  private bodyZAngle(body: CANNON.Body): number {
+    const x = new CANNON.Vec3();
+    body.quaternion.vmult(new CANNON.Vec3(1, 0, 0), x);
+    return Math.atan2(x.y, x.x);
+  }
+
+  /** World-space XY centre of one of a body's shapes. */
+  private shapeCenter2D(body: CANNON.Body, idx: number): Vec2 {
+    const wp = new CANNON.Vec3();
+    body.quaternion.vmult(body.shapeOffsets[idx], wp);
+    wp.vadd(body.position, wp);
+    return { x: wp.x, y: wp.y };
+  }
+
+  private get fingerIndex(): number {
+    return this.armBody.shapes.length > 1 ? 1 : 0;
+  }
+
+  private fingerObb(): OBB2D {
+    const idx = this.fingerIndex;
+    const he = (this.armBody.shapes[idx] as CANNON.Box).halfExtents;
+    const c = this.shapeCenter2D(this.armBody, idx);
+    return { cx: c.x, cy: c.y, hx: he.x, hy: he.y, angle: this.bodyZAngle(this.armBody) };
+  }
+
+  private leverObb(): OBB2D {
+    const he = (this.leverBody.shapes[0] as CANNON.Box).halfExtents;
+    const c = this.shapeCenter2D(this.leverBody, 0);
+    return { cx: c.x, cy: c.y, hx: he.x, hy: he.y, angle: this.bodyZAngle(this.leverBody) };
+  }
+
+  /** Leading point of the finger — the vertex that should strike the lever. */
+  private fingerTip(): Vec2 {
+    const idx = this.fingerIndex;
+    const he = (this.armBody.shapes[idx] as CANNON.Box).halfExtents;
+    const c = this.shapeCenter2D(this.armBody, idx);
+    const a = this.bodyZAngle(this.armBody);
+    return { x: c.x + Math.cos(a) * he.x, y: c.y + Math.sin(a) * he.x };
+  }
+
+  private penetrationDepth(): number {
+    if (!this.armBody || !this.leverBody) return 0;
+    return obbPenetrationDepth(this.fingerObb(), this.leverObb());
+  }
+
+  /**
+   * Run the precise contact checks for the current physics state. Driven by the
+   * world "postStep" event so it sees every sub-step of the knock:
+   *   - records the real cannon-es contact points (the vertices that touched);
+   *   - measures overlap depth and flags pass-through (shapes sinking in);
+   *   - flags tunnelling (finger swept through the lever with no contact).
+   */
+  private sampleContacts(): void {
+    if (!this.armBody || !this.leverBody) return;
+    const lever = this.leverObb();
+
+    const depth = this.penetrationDepth();
+    if (depth > this.maxPenetration) this.maxPenetration = depth;
+    if (depth > PASS_THROUGH_DEPTH) {
+      this.passThrough = true;
+      this.error(
+        "passthrough",
+        `arm has sunk ${depth.toFixed(3)} m into the lever — shapes passing through each other`,
+      );
+    }
+
+    const tip = this.fingerTip();
+    if (this.prevFingerTip && sweptThrough(this.prevFingerTip, tip, lever)) {
+      this.tunnelEvents++;
+      this.error(
+        "tunnel",
+        "arm finger swept clean through the lever (tunnelling — collision missed)",
+      );
+    }
+    this.prevFingerTip = tip;
+
+    // Real contact points the solver produced this sub-step.
+    for (const eq of this.machine.world.contacts) {
+      const pair =
+        (eq.bi === this.armBody && eq.bj === this.leverBody) ||
+        (eq.bi === this.leverBody && eq.bj === this.armBody);
+      if (!pair) continue;
+      const wp = new CANNON.Vec3();
+      eq.bi.position.vadd(eq.ri, wp);
+      this.recordContact({ x: wp.x, y: wp.y, z: wp.z }, { x: eq.ni.x, y: eq.ni.y, z: eq.ni.z });
+    }
+  }
+
+  private recordContact(point: XYZ, normal: XYZ): void {
+    this.contactRecords.push({
+      point,
+      normal,
+      phase: this.machine.phase,
+      phaseTime: this.machine.phaseTime,
+    });
+    if (this.contactRecords.length > 200) this.contactRecords.shift();
+
+    for (const r of this.expectedResults) {
+      const spec = EXPECTED_CONTACTS.find((s) => s.name === r.name);
+      if (!spec) continue;
+      const dist = Math.hypot(
+        point.x - r.expectedPoint.x,
+        point.y - r.expectedPoint.y,
+        point.z - r.expectedPoint.z,
+      );
+      if (dist < r.closestDistance) {
+        r.closestDistance = dist;
+        r.observedPoint = { ...point };
+      }
+      if (!r.satisfied && dist <= r.tolerance && spec.during.includes(this.machine.phase)) {
+        r.satisfied = true;
+        this.log_(
+          "contact",
+          `expected "${r.name}" met at (${point.x.toFixed(2)}, ${point.y.toFixed(2)}), ` +
+            `${dist.toFixed(3)} m from target`,
+        );
+      }
+    }
+  }
+
+  private contactReport(): ContactReport {
+    return {
+      expected: this.expectedResults.map((r) => ({
+        ...r,
+        expectedPoint: { ...r.expectedPoint },
+        observedPoint: r.observedPoint ? { ...r.observedPoint } : null,
+      })),
+      contactPoints: this.contactRecords.map((r) => ({
+        point: { ...r.point },
+        normal: { ...r.normal },
+        phase: r.phase,
+        phaseTime: r.phaseTime,
+      })),
+      maxPenetrationDepth: this.maxPenetration,
+      passThrough: this.passThrough,
+      tunnelEvents: this.tunnelEvents,
+    };
+  }
+
   // --- Collision overlay ----------------------------------------------------
 
   private buildPivotMarkers(): void {
@@ -387,6 +667,27 @@ export class DebugMenu {
       this.overlay.add(marker);
       this.pivotMarkers.push(marker);
     }
+  }
+
+  private buildContactMarkers(): void {
+    // Yellow rings mark where each expected contact *should* land.
+    for (const spec of EXPECTED_CONTACTS) {
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(spec.tolerance, 0.012, 8, 28),
+        new THREE.MeshBasicMaterial({ color: 0xffd23f }),
+      );
+      ring.position.set(spec.point.x, spec.point.y, spec.point.z);
+      ring.visible = false;
+      this.overlay.add(ring);
+      this.expectedMarkers.push(ring);
+    }
+    // A green dot snaps to the most recent actual contact point.
+    this.actualMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.035, 12, 10),
+      new THREE.MeshBasicMaterial({ color: 0x4ade80 }),
+    );
+    this.actualMarker.visible = false;
+    this.overlay.add(this.actualMarker);
   }
 
   private buildWireframes(): void {
@@ -417,6 +718,22 @@ export class DebugMenu {
   }
 
   private syncOverlay(): void {
+    this.syncWireframes();
+    this.syncContactMarkers();
+  }
+
+  private syncContactMarkers(): void {
+    for (const m of this.expectedMarkers) m.visible = this.showContactPoints;
+    const last = this.contactRecords[this.contactRecords.length - 1];
+    if (this.showContactPoints && last) {
+      this.actualMarker.position.set(last.point.x, last.point.y, last.point.z);
+      this.actualMarker.visible = true;
+    } else {
+      this.actualMarker.visible = false;
+    }
+  }
+
+  private syncWireframes(): void {
     if (!this.showCollision) return;
     const inContact = (name: string): boolean => {
       for (const key of this.activeContacts) if (key.includes(name)) return true;
@@ -465,7 +782,7 @@ export class DebugMenu {
     if (seconds > 0) {
       m.activate();
       for (let t = 0; t < seconds; t += SEEK_STEP) {
-        m.update(Math.min(SEEK_STEP, seconds - t));
+        m.update(Math.min(SEEK_STEP, seconds - t)); // contacts sampled via postStep
         this.detectPhaseChange();
         this.checkInvariants();
       }
@@ -535,6 +852,7 @@ export class DebugMenu {
       switchOn: m.switchAngle > 0,
       lidAngle: m.lidAngle,
       armLeverGap: this.armLeverGap(),
+      penetration: this.penetrationDepth(),
       activeContacts: [...this.activeContacts],
       timeScale: this.timeScale,
       paused: this.paused,
@@ -617,8 +935,14 @@ export class DebugMenu {
       for (const m of this.pivotMarkers) m.visible = on;
       this.host.render();
     });
+    this.contactToggle = checkbox("Contact points", false, (on) => {
+      this.showContactPoints = on;
+      this.syncContactMarkers();
+      this.host.render();
+    });
     toggles.appendChild(this.collisionToggle.parentElement!);
     toggles.appendChild(this.pivotToggle.parentElement!);
+    toggles.appendChild(this.contactToggle.parentElement!);
     toggles.appendChild(
       checkbox("Flash on contact", true, (on) => {
         this.flashContacts = on;
@@ -686,6 +1010,7 @@ export class DebugMenu {
       `arm       ${t.armAngle.toFixed(3)} rad\n` +
       `lid       ${t.lidAngle.toFixed(3)} rad\n` +
       `arm↔lever ${t.armLeverGap >= 0 ? "gap " : "PEN "}${Math.abs(t.armLeverGap).toFixed(3)}\n` +
+      `overlap   ${t.penetration.toFixed(3)} m${t.penetration > PASS_THROUGH_DEPTH ? "  ⚠ pass-through" : ""}\n` +
       `contacts  ${t.activeContacts.length ? t.activeContacts.join(", ") : "none"}\n` +
       `time      ${t.timeScale}×  ${t.paused ? "(paused)" : ""}\n` +
       `fps       ${t.fps.toFixed(0)}`;
@@ -703,6 +1028,7 @@ export class DebugMenu {
       getWarnings: () => this.log.filter((e) => e.level === "warn").map((e) => ({ ...e })),
       getErrors: () => this.log.filter((e) => e.level === "error").map((e) => ({ ...e })),
       getContacts: () => [...this.activeContacts],
+      getContactReport: () => this.contactReport(),
       getBodies: () =>
         this.parts.map((p) => {
           const { min, max } = this.bodyAabb(p.body);
@@ -742,6 +1068,10 @@ export class DebugMenu {
       setPivots: (on: boolean) => {
         this.pivotToggle.checked = on;
         this.pivotToggle.dispatchEvent(new Event("change"));
+      },
+      setContactPoints: (on: boolean) => {
+        this.contactToggle.checked = on;
+        this.contactToggle.dispatchEvent(new Event("change"));
       },
       open: () => this.setOpen(true),
       close: () => this.setOpen(false),

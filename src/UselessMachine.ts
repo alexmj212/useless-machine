@@ -63,7 +63,7 @@ const leverAngleOf = (q: CANNON.Quaternion): number => {
   return Math.atan2(-_y.x, _y.y);
 };
 
-const FIXED_DT = 1 / 120; // physics timestep
+export const FIXED_DT = 1 / 120; // physics timestep
 
 export type State = "idle" | "opening" | "extending" | "retracting" | "closing";
 

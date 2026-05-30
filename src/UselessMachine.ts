@@ -3,22 +3,21 @@ import * as THREE from "three";
 // ----------------------------------------------------------------------------
 // Geometry
 //
-// The switch lever pivots at SWITCH_POS; its tip traces an arc of radius
-// LEVER_LEN. The toggle leans toward the lid (-X) when ON and away (+X) when
-// OFF. We want the arm's finger to physically meet the toggle tip and carry it
-// from ON to OFF.
+// Classic useless-machine layout: the toggle sits on the solid box top to the
+// RIGHT, with a hinged lid/opening to its LEFT. The arm pivots inside the box,
+// off to the side, sweeps up out of the opening and travels AIRBORNE (above the
+// top surface) over to the switch, then presses it from ON to OFF.
 //
-// Trick: put the arm pivot on the perpendicular bisector of the ON-tip and
-// OFF-tip (i.e. directly below the switch on X). Then BOTH tip positions lie on
-// the same circle around the arm pivot, so a single sweeping arm can touch the
-// tip at ON, at OFF, and (very nearly) everywhere between. The arm and switch
-// angles are driven from a shared progress value so the finger tracks the tip.
+// Because the arm exits through the hole and is above the top by the time it
+// reaches the switch, its body never clips the solid deck between them. The
+// reach is off-axis, so contact slides along the lever rather than tracking the
+// tip exactly — natural for a "shove it over" motion.
 // ----------------------------------------------------------------------------
 
-const SWITCH_POS = new THREE.Vector3(0.5, 1.24, 0);
-const LEVER_LEN = 0.45;
-const SWITCH_ON = 0.5; // lever tilt (rad) when ON — leans -X, toward the lid
-const SWITCH_OFF = -0.5; // lever tilt when OFF — leans +X
+const SWITCH_POS = new THREE.Vector3(0.78, 1.2, 0);
+const LEVER_LEN = 0.34;
+const SWITCH_ON = 0.5; // lever tilt (rad) when ON — leans -X, toward the arm
+const SWITCH_OFF = -0.5; // lever tilt when OFF — leans +X, away from the arm
 
 /** World position of the lever tip for a given tilt angle. */
 const leverTip = (angle: number): THREE.Vector3 =>
@@ -29,27 +28,37 @@ const leverTip = (angle: number): THREE.Vector3 =>
   );
 
 const TIP_ON = leverTip(SWITCH_ON);
-const TIP_OFF = leverTip(SWITCH_OFF);
 
-/** Arm pivot sits on the X of the switch (the tips' perpendicular bisector). */
-const ARM_PIVOT = new THREE.Vector3(SWITCH_POS.x, 0.5, 0);
+/** Arm pivot: inside the box, under the opening, to the LEFT of the switch. */
+const ARM_PIVOT = new THREE.Vector3(0.5, 0.85, 0);
 
-/** Finger sweep radius — equidistant to both tips by construction. */
+const armAngleFor = (p: THREE.Vector3): number =>
+  Math.atan2(p.y - ARM_PIVOT.y, p.x - ARM_PIVOT.x);
+
+/** Arm length is set so the tip reaches the ON lever tip. */
 const ARM_LEN = ARM_PIVOT.distanceTo(TIP_ON);
 
-const armAngleFor = (tip: THREE.Vector3): number =>
-  Math.atan2(tip.y - ARM_PIVOT.y, tip.x - ARM_PIVOT.x);
-
-const ARM_ON = armAngleFor(TIP_ON); // finger coincides with the ON tip
-const ARM_OFF = armAngleFor(TIP_OFF); // finger coincides with the OFF tip
-const ARM_HIDDEN = Math.PI; // arm folded flat (-X) inside the box
-
 /**
- * The arm body sweeps in a plane offset in +Z from the switch, so it passes
- * BESIDE the switch base rather than through it; only the finger reaches back
- * to Z = 0 to touch the toggle.
+ * Where, on the lever at tilt `angle`, the arm tip touches it (the point on the
+ * lever segment at distance ARM_LEN from the pivot, nearest the tip). Lets the
+ * contact slide down the lever as it is pushed past the arm's reach.
  */
-const ARM_Z = 0.18;
+const leverContact = (angle: number): THREE.Vector3 => {
+  const base = SWITCH_POS;
+  const seg = leverTip(angle).sub(base); // base -> tip
+  const f = base.clone().sub(ARM_PIVOT);
+  const a = seg.dot(seg);
+  const b = 2 * f.dot(seg);
+  const c = f.dot(f) - ARM_LEN * ARM_LEN;
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return leverTip(angle); // unreachable; aim for the tip
+  const t = Math.min(1, Math.max(0, (-b + Math.sqrt(disc)) / (2 * a)));
+  return base.clone().add(seg.multiplyScalar(t));
+};
+
+const ARM_ON = armAngleFor(TIP_ON); // tip meets the raised (ON) lever tip
+const ARM_OFF = armAngleFor(leverContact(SWITCH_OFF)); // pressed to OFF
+const ARM_HIDDEN = Math.PI; // arm folded flat (-X), tucked inside the box
 
 /** Lid rotation when fully open. */
 const LID_OPEN = 1.95;
@@ -64,10 +73,11 @@ const PHASE_SECONDS = {
 } as const;
 
 // Top opening, framed by solid panels so the arm has a real hole to pass.
-// Wide enough on +X to contain every point where the arm crosses the top.
-const OPEN_X_MIN = -0.6;
-const OPEN_X_MAX = 0.7;
-const OPEN_Z_HALF = 0.55;
+// To the LEFT of the switch; its right lip nearly reaches the switch base so
+// the arm crosses the top within the hole.
+const OPEN_X_MIN = -0.5;
+const OPEN_X_MAX = 0.62;
+const OPEN_Z_HALF = 0.5;
 
 const easeInOut = (t: number): number =>
   t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -94,9 +104,8 @@ export class UselessMachine {
   private readonly armPivot = new THREE.Group();
 
   // Empty markers used to read exact world positions (rendering + tests).
-  private readonly fingerMarker = new THREE.Object3D(); // contact point, Z = 0
-  private readonly armEndMarker = new THREE.Object3D(); // arm body end, Z = ARM_Z
-  private readonly tipMarker = new THREE.Object3D();
+  private readonly fingerMarker = new THREE.Object3D(); // arm tip
+  private readonly tipMarker = new THREE.Object3D(); // lever tip
 
   private isOn = false;
   private sequence: Phase[] | null = null;
@@ -187,9 +196,9 @@ export class UselessMachine {
   }
 
   private buildSwitch(): void {
-    // Mounting plate. Shallow in Z so it stays clear of the arm's sweep plane.
+    // Mounting plate, sitting on the solid box top beside (right of) the lid.
     const plate = new THREE.Mesh(
-      new THREE.BoxGeometry(0.3, 0.06, 0.16),
+      new THREE.BoxGeometry(0.34, 0.06, 0.36),
       new THREE.MeshStandardMaterial({
         color: 0x1c1c1c,
         roughness: 0.5,
@@ -231,9 +240,9 @@ export class UselessMachine {
   }
 
   private buildArm(): void {
-    // Pivot is offset in +Z; the finger reaches back to Z = 0 to touch the
-    // toggle, so the arm body never collides with the switch base.
-    this.armPivot.position.set(ARM_PIVOT.x, ARM_PIVOT.y, ARM_Z);
+    // Pivots inside the box to the left of the switch; sweeps up through the
+    // opening and reaches over to the toggle.
+    this.armPivot.position.copy(ARM_PIVOT);
     const armMat = new THREE.MeshStandardMaterial({
       color: 0xcfd2d6,
       roughness: 0.35,
@@ -246,23 +255,14 @@ export class UselessMachine {
     arm.position.set(ARM_LEN / 2, 0, 0);
     arm.castShadow = true;
 
-    // Cross-piece bridging the arm plane (Z = ARM_Z) back to the toggle plane.
-    const reach = new THREE.Mesh(
-      new THREE.BoxGeometry(0.09, 0.09, ARM_Z + 0.04),
-      armMat,
-    );
-    reach.position.set(ARM_LEN - 0.05, 0.02, -ARM_Z / 2);
-    reach.castShadow = true;
-
-    // The finger nub that meets the toggle, at Z = 0 (the switch plane).
-    const finger = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.22, 0.14), armMat);
-    finger.position.set(ARM_LEN - 0.05, 0.06, -ARM_Z);
+    // The finger nub that presses the toggle, at the very end of the arm.
+    const finger = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.2, 0.14), armMat);
+    finger.position.set(ARM_LEN - 0.04, 0.07, 0);
     finger.castShadow = true;
 
-    this.fingerMarker.position.set(ARM_LEN, 0, -ARM_Z); // world Z = 0
-    this.armEndMarker.position.set(ARM_LEN, 0, 0); // world Z = ARM_Z
+    this.fingerMarker.position.set(ARM_LEN, 0, 0);
 
-    this.armPivot.add(arm, reach, finger, this.fingerMarker, this.armEndMarker);
+    this.armPivot.add(arm, finger, this.fingerMarker);
     this.root.add(this.armPivot);
   }
 
@@ -297,10 +297,16 @@ export class UselessMachine {
     return this.tipMarker.getWorldPosition(target);
   }
 
-  /** World position of the arm body's far end (in the arm's sweep plane). */
-  armEndWorld(target = new THREE.Vector3()): THREE.Vector3 {
+  /** World position of the switch lever's base (its pivot). */
+  switchBaseWorld(target = new THREE.Vector3()): THREE.Vector3 {
     this.root.updateMatrixWorld(true);
-    return this.armEndMarker.getWorldPosition(target);
+    return this.switchPivot.getWorldPosition(target);
+  }
+
+  /** World position of the arm's pivot. */
+  armPivotWorld(target = new THREE.Vector3()): THREE.Vector3 {
+    this.root.updateMatrixWorld(true);
+    return this.armPivot.getWorldPosition(target);
   }
 
   // --- Animation ------------------------------------------------------------

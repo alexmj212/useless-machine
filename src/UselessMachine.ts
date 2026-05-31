@@ -622,16 +622,17 @@ export class UselessMachine {
     return q;
   }
 
-  /** The tease, self-contained and rapid: crack the lid, slam it shut, then
-   *  immediately throw it open and actually flip the switch. */
+  /** The tease: crack the lid and just... hold it there a good while, as if
+   *  peering out and finding nothing. Then shut it (you think it gave up) — and
+   *  immediately snap it open and flip the switch off, fast. */
   private ignoreSegments(): Segment[] {
     const fast = LID_SPEED * 2.4;
     return [
-      this.segLid(LID_PEEK, fast, "ignoring"), // crack open...
-      this.segWait(0.06, "ignoring", ARM_HIDDEN), // ...a blink...
-      this.segLid(0, fast, "ignoring"), // ...shut again (the fake-out)
-      this.segLid(LID_OPEN, fast, "opening"), // now open for real
-      ...this.knockAndExit("pop"), // and snap it off
+      this.segLid(LID_PEEK, LID_SPEED, "ignoring"), // crack open...
+      this.segWait(0.8, "ignoring", ARM_HIDDEN), // ...and linger, pretending not to notice
+      this.segLid(0, fast, "ignoring"), // ...shut again (you think it's done)
+      this.segLid(LID_OPEN, fast, "opening"), // gotcha — throw it open
+      ...this.knockAndExit("pop"), // and snap it off, fast
     ];
   }
 

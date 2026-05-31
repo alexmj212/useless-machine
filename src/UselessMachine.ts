@@ -125,6 +125,7 @@ const LID_SPEED = 6; // lid open/close rate (rad/s)
 const PEEK_ANGLE = 2.1; // arm pokes just out of the hole, short of the switch
 const FEINT_ANGLE = 1.9; // a little further, then it retreats — the fake-out
 const REACT_COCK = 2.3; // recoil pose for the double-take — clear of the switch
+const REACT_LOOK = 0.55; // how long it "looks" at you before swatting (a long beat)
 const LID_PEEK = 0.9; // partial lid lift for the "ignore" tease
 
 // --- Hidden "revenge" meter ------------------------------------------------
@@ -577,44 +578,41 @@ export class UselessMachine {
 
   /** Assemble the segment list for a behavior. */
   private buildResponse(b: BehaviorName): Segment[] {
-    const armSpeed = b === "creep" ? ARM_SPEED * 0.45 : b === "pop" ? ARM_SPEED * 1.6 : ARM_SPEED;
+    if (b === "ignore") return this.ignoreSegments();
+
     const lidSpeed = b === "pop" ? LID_SPEED * 1.7 : LID_SPEED;
-    const knockSpeed = b === "slam" ? ARM_SPEED * 1.5 : armSpeed;
-    const closeSpeed = b === "slam" ? LID_SPEED * 2.4 : lidSpeed;
-
-    // The tease: lid cracks open, nothing emerges, lid shuts — switch stays ON,
-    // so the controller comes straight back with a real (non-ignore) response.
-    if (b === "ignore") {
-      return [
-        this.segLid(LID_PEEK, lidSpeed, "ignoring"),
-        this.segWait(0.45, "ignoring", ARM_HIDDEN),
-        this.segLid(0, lidSpeed, "ignoring"),
-      ];
-    }
-
     const q: Segment[] = [this.segLid(LID_OPEN, lidSpeed, "opening")];
 
+    // Rise flourishes before the knock.
     if (b === "peek") {
-      q.push(this.segArm(PEEK_ANGLE, armSpeed, "peeking"));
+      q.push(this.segArm(PEEK_ANGLE, ARM_SPEED, "peeking"));
       q.push(this.segWait(0.4, "peeking", PEEK_ANGLE));
     } else if (b === "feint") {
-      q.push(this.segArm(FEINT_ANGLE, armSpeed * 1.3, "peeking"));
-      q.push(this.segArm(ARM_HIDDEN, armSpeed * 1.3, "peeking")); // retreat — the fake-out
+      q.push(this.segArm(FEINT_ANGLE, ARM_SPEED * 1.3, "peeking"));
+      q.push(this.segArm(ARM_HIDDEN, ARM_SPEED * 1.3, "peeking")); // retreat — the fake-out
       q.push(this.segWait(0.3, "peeking", ARM_HIDDEN));
     }
 
-    q.push(this.segArm(ARM_OUT, knockSpeed, "extending", true));
+    q.push(...this.knockAndExit(b));
+    return q;
+  }
+
+  /** The knock and everything after it (flourish, exit, retract, close) — shared
+   *  by fresh responses and by the re-press reaction. */
+  private knockAndExit(b: BehaviorName): Segment[] {
+    const armSpeed = b === "creep" ? ARM_SPEED * 0.45 : b === "pop" ? ARM_SPEED * 1.6 : ARM_SPEED;
+    const knockSpeed =
+      b === "slam" ? ARM_SPEED * 1.6 : b === "doubletake" ? ARM_SPEED * 1.3 : armSpeed;
+    const closeSpeed = b === "slam" ? LID_SPEED * 2.4 : b === "pop" ? LID_SPEED * 1.7 : LID_SPEED;
+
+    const q: Segment[] = [this.segArm(ARM_OUT, knockSpeed, "extending", true)];
 
     if (b === "multitap") {
-      // Angry little jabs above the deck (the lever's already snapped clear).
-      for (let i = 0; i < 2; i++) {
-        q.push(this.segArm(ARM_OUT + 0.22, knockSpeed * 1.4, "flourish"));
-        q.push(this.segArm(ARM_OUT, knockSpeed * 1.4, "flourish"));
-      }
+      q.push(this.segMultiTap(13, 1.0, "flourish")); // a frantic machine-gun burst
     }
 
     if (b === "wiggle") {
-      q.push(this.segWiggle(1.9, 0.28, 2.5, 0.7, "taunting")); // a taunting waggle
+      q.push(this.segWiggle(1.9, 0.28, 2.5, 0.7, ARM_SPEED * 1.5, "taunting")); // taunting waggle
     } else if (b === "linger") {
       q.push(this.segWait(0.6, "taunting", ARM_OUT)); // hangs out, "looking at you"
     }
@@ -624,12 +622,27 @@ export class UselessMachine {
     return q;
   }
 
+  /** The tease, self-contained and rapid: crack the lid, slam it shut, then
+   *  immediately throw it open and actually flip the switch. */
+  private ignoreSegments(): Segment[] {
+    const fast = LID_SPEED * 2.4;
+    return [
+      this.segLid(LID_PEEK, fast, "ignoring"), // crack open...
+      this.segWait(0.06, "ignoring", ARM_HIDDEN), // ...a blink...
+      this.segLid(0, fast, "ignoring"), // ...shut again (the fake-out)
+      this.segLid(LID_OPEN, fast, "opening"), // now open for real
+      ...this.knockAndExit("pop"), // and snap it off
+    ];
+  }
+
   /** Re-press reaction: recoil clear of the switch (so your flip-up actually
-   *  lands instead of bonking the arm), hold a beat to "look", then swat it
-   *  again — harder the angrier it is. Replaces the rest of the queue. */
+   *  lands instead of bonking the arm), hold a long beat to "look", then swat
+   *  it again. The swat flavor is re-rolled from the *current* revenge every
+   *  re-press, so spamming it visibly escalates (plain → multi-tap → slam).
+   *  Replaces the rest of the queue. */
   private injectReaction(): void {
-    const swat = this.revenge > REVENGE_TIER_3 ? ARM_SPEED * 1.6 : ARM_SPEED * 1.2;
-    this.behavior = "doubletake";
+    const flavor = this.rollReactionFlavor();
+    this.behavior = flavor;
     this.justIgnored = false;
     // NB: a re-press only *adds* revenge (REVENGE_REFLIP) — unlike a rolled gag
     // it never spends any. Impatient re-pressing is meant to wind it right up.
@@ -639,11 +652,18 @@ export class UselessMachine {
       // during "closing", the arm must not sweep up through a half-shut lid.
       this.segLid(LID_OPEN, LID_SPEED * 1.5, "opening"),
       this.segArm(REACT_COCK, ARM_SPEED * 1.5, "doubletake"), // recoil, clearing the lever
-      this.segWait(0.22, "doubletake", REACT_COCK), // the "look"
-      this.segArm(ARM_OUT, swat, "extending", true), // SWAT
-      this.segArm(ARM_HIDDEN, ARM_SPEED, "retracting"),
-      this.segLid(0, LID_SPEED, "closing"),
+      this.segWait(REACT_LOOK, "doubletake", REACT_COCK), // the long "look"
+      ...this.knockAndExit(flavor), // ...then swat, in the rolled flavor
     ];
+  }
+
+  /** Pick the swat flavor for a re-press, escalating with revenge. Always at
+   *  least a plain double-take; the nastier flavors unlock as it winds up. */
+  private rollReactionFlavor(): BehaviorName {
+    const pool: BehaviorName[] = ["doubletake"];
+    if (this.revenge > REVENGE_TIER_2) pool.push("multitap", "wiggle");
+    if (this.revenge > REVENGE_TIER_3) pool.push("slam", "slam", "multitap");
+    return pool[Math.floor(this.rng() * pool.length)];
   }
 
   // --- Segment factories ----------------------------------------------------
@@ -698,12 +718,34 @@ export class UselessMachine {
   }
 
   /** Oscillate the arm around `base` for a taunting waggle. */
-  private segWiggle(base: number, amp: number, cycles: number, duration: number, phase: State): Segment {
+  private segWiggle(
+    base: number,
+    amp: number,
+    cycles: number,
+    duration: number,
+    maxSpeed: number,
+    phase: State,
+  ): Segment {
     return {
       phase,
       step: () => {
         const t = Math.min(1, this.stateTime / duration);
-        this.driveArm(base + amp * Math.sin(2 * Math.PI * cycles * t), ARM_SPEED * 1.5);
+        this.driveArm(base + amp * Math.sin(2 * Math.PI * cycles * t), maxSpeed);
+        return this.stateTime >= duration;
+      },
+    };
+  }
+
+  /** A frantic machine-gun burst: snap the arm between the strike pose and a
+   *  small lift `jabs` times in `duration`, well above the deck so it never
+   *  clips the frame (the lever has already snapped clear). */
+  private segMultiTap(jabs: number, duration: number, phase: State): Segment {
+    const half = duration / (jabs * 2); // each jab is a strike + a lift
+    return {
+      phase,
+      step: () => {
+        const i = Math.floor(this.stateTime / half);
+        this.driveArm(i % 2 === 0 ? ARM_OUT : ARM_OUT + 0.2, ARM_SPEED * 5);
         return this.stateTime >= duration;
       },
     };

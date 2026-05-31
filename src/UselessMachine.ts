@@ -236,11 +236,10 @@ export class UselessMachine {
   }
 
   private buildBody(): void {
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x7a5230,
-      roughness: 0.75,
-      metalness: 0.05,
-    });
+    // Matte wood: low metalness + high roughness means it only catches a faint
+    // Fresnel bounce off the environment probe, staying grounded against the
+    // polished metal parts rather than looking varnished.
+    const mat = new THREE.MeshStandardMaterial({ color: 0x7a5230, roughness: 0.75, metalness: 0.05 });
     // Bottom + four walls.
     this.addStaticBox(3, 0.1, 2, 0, 0.05, 0, mat);
     this.addStaticBox(0.1, 1.2, 2, 1.45, 0.6, 0, mat);
@@ -274,7 +273,8 @@ export class UselessMachine {
     // Mount plate (visual only).
     const plate = new THREE.Mesh(
       new THREE.BoxGeometry(0.32, 0.06, 0.34),
-      new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.5, metalness: 0.3 }),
+      // Machined-metal mount plate — a low sheen that catches the probe.
+      new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.4, metalness: 0.55 }),
     );
     plate.position.set(SWITCH_POS.x, 1.22, 0);
     plate.castShadow = true;
@@ -295,16 +295,17 @@ export class UselessMachine {
       // direction, so the visible rod and the physics shape line up where it
       // counts. Slightly tapered, wider at the base, like a real toggle.
       new THREE.CylinderGeometry(0.045, 0.055, LEVER_LEN, 24),
-      // Brushed silver. metalness is kept moderate (like the arm) so the light
-      // base colour reads as silver — at near-1.0 metalness with no environment
-      // map a metal goes near-black except for direct highlights.
-      new THREE.MeshStandardMaterial({ color: 0xccd0d6, roughness: 0.35, metalness: 0.6 }),
+      // Brushed silver. The scene now carries an environment probe
+      // (see main.ts), so we can run near-full metalness — the reflections it
+      // picks up are what make it read as metal instead of going near-black.
+      new THREE.MeshStandardMaterial({ color: 0xccd0d6, roughness: 0.28, metalness: 0.95 }),
     );
     lever.castShadow = true;
     const knob = new THREE.Mesh(
-      new THREE.SphereGeometry(0.09, 20, 16),
-      // Polished silver ball-top — a touch shinier than the shaft.
-      new THREE.MeshStandardMaterial({ color: 0xdee1e5, roughness: 0.2, metalness: 0.7 }),
+      new THREE.SphereGeometry(0.09, 32, 24),
+      // Polished silver ball-top — lower roughness than the shaft, so it catches
+      // a tighter highlight off the probe and reads shinier.
+      new THREE.MeshStandardMaterial({ color: 0xdee1e5, roughness: 0.12, metalness: 1.0 }),
     );
     knob.position.set(0, LEVER_HALF, 0);
     knob.castShadow = true;
@@ -329,7 +330,7 @@ export class UselessMachine {
     body.angularDamping = 0.4;
     this.world.addBody(body);
 
-    const mat = new THREE.MeshStandardMaterial({ color: 0xcfd2d6, roughness: 0.35, metalness: 0.6 });
+    const mat = new THREE.MeshStandardMaterial({ color: 0xcfd2d6, roughness: 0.3, metalness: 0.92 });
     const group = new THREE.Group();
     const bar = new THREE.Mesh(new THREE.BoxGeometry(ARM_LEN, 0.08, 0.13), mat);
     const knocker = new THREE.Mesh(new THREE.BoxGeometry(0.1, KNOCKER_LEN, 0.16), mat);

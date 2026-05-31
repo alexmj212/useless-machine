@@ -38,6 +38,8 @@ describe("UselessMachine — the arm knocks the switch back off", () => {
   it("flips ON, then the arm collides it back to OFF and settles", () => {
     const m = new UselessMachine();
     m.activate();
+    // The click-flip animates ON over ~0.1s (no longer instant); step past it.
+    for (let i = 0; i < 12; i++) m.update(1 / 60);
     expect(m.switchAngle).toBeGreaterThan(0); // user flipped it ON
 
     const samples = runUntilIdle(m);

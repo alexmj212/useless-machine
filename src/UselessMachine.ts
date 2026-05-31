@@ -85,7 +85,17 @@ const angleClose = (a: number, b: number, tol: number): boolean =>
 
 export const FIXED_DT = 1 / 120; // physics timestep
 
-export type State = "idle" | "opening" | "extending" | "retracting" | "closing";
+export type State =
+  | "idle"
+  | "flipping"
+  | "opening"
+  | "extending"
+  | "retracting"
+  | "closing";
+
+// How long the user's click-flip (OFF → ON) takes to animate. Short and snappy —
+// a real toggle flicks over, it doesn't glide.
+const FLIP_TIME = 0.1;
 
 /** A physics body paired with a human-readable name, for debug overlays. */
 export interface DebugPart {
@@ -371,8 +381,9 @@ export class UselessMachine {
   activate(): void {
     if (this.isBusy || this.isOn) return;
     this.isOn = true;
-    this.setLever(SWITCH_ON);
-    this.state = "opening";
+    // Animate the flip over FLIP_TIME instead of snapping the lever to ON in a
+    // single frame; the lid opening waits until the flip completes.
+    this.state = "flipping";
     this.stateTime = 0;
   }
 
@@ -387,6 +398,9 @@ export class UselessMachine {
 
   /** Bistable detent: torque that snaps the lever to whichever side it's on. */
   private detentLever(): void {
+    // While the click-flip animates, the lever is driven kinematically; the
+    // detent would pull it back toward OFF until it crosses centre, so hold off.
+    if (this.state === "flipping") return;
     const a = this.switchAngle;
     const target = a >= 0 ? SWITCH_ON : SWITCH_OFF;
     const torque = -6 * (a - target) - 0.5 * this.lever.angularVelocity.z;
@@ -431,6 +445,16 @@ export class UselessMachine {
       case "idle":
         this.driveArm(ARM_HIDDEN);
         break;
+      case "flipping": {
+        // Kinematically sweep the lever OFF → ON (detent is disabled this phase
+        // so it doesn't fight the animation). smoothstep eases in and out.
+        const t = Math.min(1, this.stateTime / FLIP_TIME);
+        const s = t * t * (3 - 2 * t);
+        this.setLever(SWITCH_OFF + (SWITCH_ON - SWITCH_OFF) * s);
+        this.driveArm(ARM_HIDDEN);
+        if (t >= 1) this.go("opening");
+        break;
+      }
       case "opening":
         this.lidAngleValue = Math.min(LID_OPEN, this.lidAngleValue + dt * 6);
         this.driveArm(ARM_HIDDEN);

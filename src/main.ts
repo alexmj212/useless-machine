@@ -93,15 +93,37 @@ function setupInteractive(): void {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
 
-  renderer.domElement.addEventListener("click", (event: MouseEvent) => {
+  const pointsAtSwitch = (event: MouseEvent): boolean => {
     pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
     pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(pointer, camera);
-    const hits = raycaster.intersectObjects(machine.interactive, false);
-    if (hits.length > 0 && !machine.isBusy) {
+    return raycaster.intersectObjects(machine.interactive, false).length > 0;
+  };
+
+  renderer.domElement.addEventListener("click", (event: MouseEvent) => {
+    if (pointsAtSwitch(event) && !machine.isBusy) {
       machine.activate();
       if (hint) hint.style.opacity = "0";
     }
+  });
+
+  // Cursor affordances: a pointer over the (idle) switch so it reads as
+  // clickable, a grab cursor over the rest of the scene (it orbits), and
+  // grabbing while a drag is in progress. We skip the hover raycast mid-drag —
+  // OrbitControls owns the cursor then, and the result would be discarded.
+  renderer.domElement.style.cursor = "grab";
+  let dragging = false;
+  renderer.domElement.addEventListener("pointerdown", () => {
+    dragging = true;
+    renderer.domElement.style.cursor = "grabbing";
+  });
+  window.addEventListener("pointerup", () => {
+    dragging = false;
+  });
+  renderer.domElement.addEventListener("pointermove", (event: MouseEvent) => {
+    if (dragging) return;
+    renderer.domElement.style.cursor =
+      pointsAtSwitch(event) && !machine.isBusy ? "pointer" : "grab";
   });
 
   // The debug menu reads the machine and drives time; it never alters the sim.

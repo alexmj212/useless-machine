@@ -147,17 +147,17 @@ interface Telemetry {
 }
 
 // Phase → representative timeline second, so each keypoint button lands inside
-// the phase it names. Tuned to the actual routine: the lid opens (~0.33s), the
-// arm sweeps up and taps the lever past centre (~0.7s), then retracts and the
-// lid closes (~1.5s total).
+// the phase it names. Tuned to the actual routine: a quick click-flip (~0.1s),
+// the lid opens (done ~0.45s), the arm taps the lever past centre (~0.85s), then
+// retracts and the lid closes (~1.6s total).
 const KEYPOINTS: { name: string; t: number }[] = [
   { name: "idle", t: 0 },
-  { name: "opening", t: 0.2 },
-  { name: "extending", t: 0.55 },
-  { name: "contact", t: 0.72 },
-  { name: "retracting", t: 0.95 },
-  { name: "closing", t: 1.3 },
-  { name: "settled", t: 1.6 },
+  { name: "opening", t: 0.28 },
+  { name: "extending", t: 0.6 },
+  { name: "contact", t: 0.85 },
+  { name: "retracting", t: 1.05 },
+  { name: "closing", t: 1.4 },
+  { name: "settled", t: 1.75 },
 ];
 
 const TIME_SCALES = [0.1, 0.25, 0.5, 1, 2];

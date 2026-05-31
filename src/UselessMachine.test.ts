@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { UselessMachine } from "./UselessMachine.js";
+import { UselessMachine, ARM_HIDDEN } from "./UselessMachine.js";
 
 /** Step the physics sim until idle (or a timeout), returning angle samples. */
 function runUntilIdle(m: UselessMachine, maxSeconds = 6) {
@@ -62,7 +62,8 @@ describe("UselessMachine — the arm knocks the switch back off", () => {
     const m = new UselessMachine();
     m.activate();
     runUntilIdle(m);
-    expect(m.armAngle).toBeLessThan(-1.5); // folded back down inside
+    // Folded back to its hidden rest, laid flat across the cavity.
+    expect(m.armAngle).toBeCloseTo(ARM_HIDDEN, 1);
   });
 
   it("ignores clicks while busy", () => {

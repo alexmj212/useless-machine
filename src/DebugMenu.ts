@@ -146,16 +146,18 @@ interface Telemetry {
   fps: number;
 }
 
-// Phase → representative timeline second, mirroring tests/visual.spec.ts so the
-// keypoint buttons land on the same moments the visual suite captures.
+// Phase → representative timeline second, so each keypoint button lands inside
+// the phase it names. Tuned to the actual routine: the lid opens (~0.33s), the
+// arm sweeps up and taps the lever past centre (~0.8s), then retracts and the
+// lid closes (~1.5s total).
 const KEYPOINTS: { name: string; t: number }[] = [
   { name: "idle", t: 0 },
-  { name: "opening", t: 0.35 },
-  { name: "extending", t: 0.9 },
-  { name: "contact", t: 1.5 },
-  { name: "retracting", t: 2.1 },
-  { name: "closing", t: 2.8 },
-  { name: "settled", t: 3.6 },
+  { name: "opening", t: 0.18 },
+  { name: "extending", t: 0.62 },
+  { name: "contact", t: 0.82 },
+  { name: "retracting", t: 1.0 },
+  { name: "closing", t: 1.35 },
+  { name: "settled", t: 1.7 },
 ];
 
 const TIME_SCALES = [0.1, 0.25, 0.5, 1, 2];
@@ -400,7 +402,7 @@ export class DebugMenu {
 
     // Leaving extension is the moment of truth: did the arm reach the lever?
     if (this.lastPhase === "extending") {
-      if (this.machine.armAngle < ARM_OUT - 0.2) {
+      if (Math.abs(this.machine.armAngle - ARM_OUT) > 0.2) {
         this.warn(
           "arm-stalled",
           `arm stopped at ${this.machine.armAngle.toFixed(2)} rad, short of ` +

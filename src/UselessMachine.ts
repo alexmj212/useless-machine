@@ -32,12 +32,20 @@ const LEVER_HALF = LEVER_LEN / 2;
 export const SWITCH_ON = 0.5; // lever tilt (rad): +ve leans -X, over the opening
 export const SWITCH_OFF = -0.5; // -ve leans +X, onto the deck
 
-// Arm: pivots inside the box, under the opening.
-export const ARM_PIVOT = new THREE.Vector3(-0.05, 0.5, 0);
+// Arm: pivots low in the box, beneath the right edge of the opening, so a SHORT
+// upward sweep clears the hole cleanly. The pivot must sit near the floor — a
+// mid-height pivot makes the arm's circular path dip below the box floor and
+// punch up through the solid deck instead of emerging through the opening.
+export const ARM_PIVOT = new THREE.Vector3(0.45, 0.3, 0);
 const ARM_LEN = 1.05;
 const ARM_HALF = ARM_LEN / 2;
-export const ARM_HIDDEN = -2.3; // folded down inside the box
-export const ARM_OUT = 1.5; // swept up through the hole, into the lever
+// Hidden: laid almost flat, pointing -X across the cavity (kept just shy of π so
+// the arm-angle reading stays clear of the atan2 branch cut at ±π).
+export const ARM_HIDDEN = 3.0;
+// Out: swung up to near-vertical so the finger rises through the opening and
+// taps the lever from its -X side, pushing it ON → OFF. The whole sweep stays
+// within x ∈ [-0.5, 0.5] at deck level, so it never clips the frame.
+export const ARM_OUT = 1.5;
 
 export const LID_OPEN = 1.95;
 
@@ -62,6 +70,10 @@ const leverAngleOf = (q: CANNON.Quaternion): number => {
   q.vmult(_basisY, _y);
   return Math.atan2(-_y.x, _y.y);
 };
+// Are two angles within `tol` of each other, measured the short way around the
+// circle (so a value just past +π and one just past −π count as adjacent)?
+const angleClose = (a: number, b: number, tol: number): boolean =>
+  Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b))) < tol;
 
 export const FIXED_DT = 1 / 120; // physics timestep
 
@@ -406,18 +418,26 @@ export class UselessMachine {
         break;
       case "extending":
         this.driveArm(ARM_OUT);
-        if (this.armAngle > ARM_OUT - 0.15 || this.stateTime > 1.6) this.go("retracting");
+        // Keep pushing until the lever is actually knocked past centre (switch
+        // angle goes negative → the detent will carry it the rest of the way to
+        // OFF), not merely until the arm reaches a fixed angle — otherwise it
+        // can retract after a glancing tap and the lever springs back ON.
+        if (this.switchAngle < 0 || this.stateTime > 1.6) this.go("retracting");
         break;
       case "retracting":
         this.driveArm(ARM_HIDDEN);
-        if (this.armAngle < ARM_HIDDEN + 0.2 || this.stateTime > 1.6) this.go("closing");
+        // Wrap-safe shortest-angle distance: ARM_HIDDEN sits near the atan2 cut
+        // at ±π, so a raw subtraction would miss if the motor overshoots past π.
+        if (angleClose(this.armAngle, ARM_HIDDEN, 0.2) || this.stateTime > 1.6) this.go("closing");
         break;
       case "closing":
         this.lidAngleValue = Math.max(0, this.lidAngleValue - dt * 6);
         this.driveArm(ARM_HIDDEN);
         if (this.lidAngleValue <= 0) {
           this.go("idle");
-          this.isOn = false;
+          // Stay truthful: only the timeout path can reach here with the lever
+          // still ON (a failed knock); don't claim OFF when it isn't.
+          this.isOn = this.switchAngle >= 0;
         }
         break;
     }

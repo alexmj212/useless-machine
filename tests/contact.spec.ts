@@ -3,11 +3,11 @@ import { test, expect } from "@playwright/test";
 // Verifies the contact-detection layer end-to-end in a real browser:
 //   - the expected arm↔lever contact is detected near where it should land;
 //   - real solver contact points are captured (the vertices that met);
-//   - the pass-through detector correctly FLAGS the current animation defect —
-//     the finger sinks ~0.15 m through the lever instead of tapping it.
+//   - the knock is a CLEAN TAP — shallow overlap, no pass-through, no tunnelling.
 // The pure geometry behind these checks is unit-tested in
-// src/contact-checks.test.ts. (The animation itself is a known-issue: see the
-// pass-through assertions below — they document the defect the menu surfaces.)
+// src/contact-checks.test.ts. (These assertions used to document a defect where
+// the finger plowed ~0.15 m through the lever; the arm geometry was fixed so it
+// now taps the lever from the side and the lever snaps clear.)
 
 interface XYZ {
   x: number;
@@ -60,7 +60,7 @@ test("detects the expected arm↔lever contact during the routine", async ({ pag
   expect(report.contactPoints.length).toBeGreaterThan(0);
 });
 
-test("flags the pass-through defect the menu was built to catch", async ({ page }) => {
+test("knocks the lever with a clean tap — no pass-through, no tunnelling", async ({ page }) => {
   const { report, errors } = await page.evaluate(() => {
     const d = window.__uselessDebug!;
     d.reset();
@@ -68,12 +68,12 @@ test("flags the pass-through defect the menu was built to catch", async ({ page 
     return { report: d.getContactReport(), errors: d.getErrors() };
   });
 
-  // The finger plows through the lever rather than tapping it: deep overlap,
-  // and the detector raises the pass-through flag + a logged error.
-  expect(report.maxPenetrationDepth).toBeGreaterThan(0.1);
-  expect(report.passThrough).toBe(true);
-  expect(errors.some((e) => /pass/i.test(e.msg))).toBe(true);
-  // It is a deep overlap, not a clean miss/tunnel-through.
+  // The finger taps the lever from the side and the lever snaps clear: the
+  // overlap stays shallow, well under the pass-through threshold.
+  expect(report.maxPenetrationDepth).toBeLessThanOrEqual(0.1);
+  expect(report.passThrough).toBe(false);
+  expect(errors.some((e) => /pass/i.test(e.msg))).toBe(false);
+  // Neither a deep plow-through nor a clean miss/tunnel-through.
   expect(report.tunnelEvents).toBe(0);
 });
 

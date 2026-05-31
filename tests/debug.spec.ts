@@ -80,11 +80,11 @@ test.describe("useless machine debug menu", () => {
       return window.__uselessDebug!.getState().armAngle;
     });
     const mid = await page.evaluate(() => {
-      window.__uselessDebug!.seek(1.5);
+      window.__uselessDebug!.seek(0.62); // the "extending" keypoint
       return window.__uselessDebug!.getState();
     });
-    // By the contact keypoint the arm has swept well up from its hidden rest.
-    expect(mid.armAngle).toBeGreaterThan(idle);
+    // Mid-routine the arm has swept well out from its hidden rest toward the lever.
+    expect(Math.abs(mid.armAngle - idle)).toBeGreaterThan(0.3);
     expect(mid.phaseTime).toBeGreaterThanOrEqual(0);
     expect(["opening", "extending", "retracting", "closing", "idle"]).toContain(mid.phase);
   });
@@ -109,7 +109,7 @@ test.describe("useless machine debug menu", () => {
     const log = await page.evaluate(() => {
       const d = window.__uselessDebug!;
       d.reset();
-      d.seek(3.8); // run past the whole routine
+      d.seek(2.0); // run past the whole routine (~1.7s envelope)
       return d.getLog();
     });
     expect(log.length).toBeGreaterThan(0);

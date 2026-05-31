@@ -215,7 +215,11 @@ export class UselessMachine {
 
     const group = new THREE.Group();
     const lever = new THREE.Mesh(
-      new THREE.BoxGeometry(0.09, LEVER_LEN, 0.16),
+      // A cylindrical toggle rod (axis along local +Y, matching the lever body).
+      // The radius matches the collision box's half-width in the contact
+      // direction, so the visible rod and the physics shape line up where it
+      // counts. Slightly tapered, wider at the base, like a real toggle.
+      new THREE.CylinderGeometry(0.045, 0.055, LEVER_LEN, 24),
       // Brushed silver. metalness is kept moderate (like the arm) so the light
       // base colour reads as silver — at near-1.0 metalness with no environment
       // map a metal goes near-black except for direct highlights.

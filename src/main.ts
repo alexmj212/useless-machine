@@ -101,7 +101,9 @@ function setupInteractive(): void {
   };
 
   renderer.domElement.addEventListener("click", (event: MouseEvent) => {
-    if (pointsAtSwitch(event) && !machine.isBusy) {
+    // No isBusy guard: re-pressing mid-routine is the whole point now. activate()
+    // debounces itself (it no-ops while the lever is already ON or mid-flip).
+    if (pointsAtSwitch(event)) {
       machine.activate();
       if (hint) hint.style.opacity = "0";
     }
@@ -122,8 +124,11 @@ function setupInteractive(): void {
   });
   renderer.domElement.addEventListener("pointermove", (event: MouseEvent) => {
     if (dragging) return;
+    // Clickable whenever the lever is OFF (you can flip it ON), even while the
+    // arm is still out — that's a re-press. Showing "grab" while it's ON avoids
+    // implying a no-op click.
     renderer.domElement.style.cursor =
-      pointsAtSwitch(event) && !machine.isBusy ? "pointer" : "grab";
+      pointsAtSwitch(event) && !machine.isOnState ? "pointer" : "grab";
   });
 
   // The debug menu reads the machine and drives time; it never alters the sim.

@@ -85,17 +85,65 @@ const angleClose = (a: number, b: number, tol: number): boolean =>
 
 export const FIXED_DT = 1 / 120; // physics timestep
 
+// The arm's choreography is a queue of segments; each carries a phase label so
+// the debug overlay and contact checks keep working. "extending" is always the
+// real collision knock; the rest are dressing for the gags.
 export type State =
   | "idle"
   | "flipping"
   | "opening"
-  | "extending"
+  | "peeking" // arm pokes out / feints before committing
+  | "extending" // the real knock — drives into the lever until it flips
+  | "flourish" // extra jabs (multi-tap)
   | "retracting"
-  | "closing";
+  | "taunting" // wiggle / linger after the knock
+  | "closing"
+  | "doubletake" // the freeze-and-look reaction to a re-press
+  | "ignoring"; // lid peeks and shuts with no arm (the tease)
+
+/** The personality the arm picks for a single response. */
+export type BehaviorName =
+  | "normal"
+  | "peek"
+  | "feint"
+  | "creep"
+  | "pop"
+  | "slam"
+  | "multitap"
+  | "wiggle"
+  | "linger"
+  | "ignore"
+  | "doubletake";
 
 // How long the user's click-flip (OFF → ON) takes to animate. Short and snappy —
 // a real toggle flicks over, it doesn't glide.
 const FLIP_TIME = 0.1;
+
+// Motion rates. ARM_SPEED / LID_SPEED are the baseline; gags scale them.
+const ARM_SPEED = 4; // motor speed clamp (rad/s)
+const LID_SPEED = 6; // lid open/close rate (rad/s)
+const PEEK_ANGLE = 2.1; // arm pokes just out of the hole, short of the switch
+const FEINT_ANGLE = 1.9; // a little further, then it retreats — the fake-out
+const REACT_COCK = 2.3; // recoil pose for the double-take — clear of the switch
+const LID_PEEK = 0.9; // partial lid lift for the "ignore" tease
+
+// --- Hidden "revenge" meter ------------------------------------------------
+// Flipping the switch winds the machine up; the more you provoke it (especially
+// re-flipping before the arm is home) the likelier — and nastier — the next gag.
+// It bleeds off over time and whenever a gag is spent. 0 = perfectly composed.
+const REVENGE_FLIP = 0.2; // a calm flip nudges it (one flip alone stays composed)
+const REVENGE_REFLIP = 0.4; // a flip while the arm is still out really provokes it
+const REVENGE_DECAY = 0.03; // per second, slowly drifting back toward composure
+const REVENGE_GAG_FLOOR = 0.2; // at/below this it always plays it straight
+const REVENGE_SPEND = 0.4; // a fired gag vents this much pressure
+const REVENGE_TIER_2 = 0.45; // unlocks feint / multi-tap
+const REVENGE_TIER_3 = 0.6; // unlocks the slam (and an angrier re-press swat)
+
+/** One step of the arm/lid choreography. `step` returns true when it's done. */
+interface Segment {
+  phase: State;
+  step: (dt: number) => boolean;
+}
 
 /** A physics body paired with a human-readable name, for debug overlays. */
 export interface DebugPart {
@@ -121,13 +169,26 @@ export class UselessMachine {
   private readonly lidPivot = new THREE.Group();
   private readonly links: Linked[] = [];
 
-  private state: State = "idle";
-  private stateTime = 0;
   private lidAngleValue = 0;
-  private isOn = false;
   private accumulator = 0;
 
-  constructor() {
+  // Arm/lid choreography: a queue of segments processed front-to-back.
+  private queue: Segment[] = [];
+  private stateTime = 0; // seconds in the current segment
+  private behavior: BehaviorName = "normal"; // what the current response is
+
+  // The user's flip animates independently of the arm, so a re-press can land
+  // mid-routine and overlap the arm's reaction.
+  private userFlipping = false;
+  private userFlipT = 0;
+  private userFlipFrom = SWITCH_OFF;
+
+  private revenge = 0;
+  private justIgnored = false; // don't play the "ignore" tease twice in a row
+  private readonly rng: () => number;
+
+  constructor(opts: { rng?: () => number } = {}) {
+    this.rng = opts.rng ?? Math.random;
     this.world.broadphase = new CANNON.NaiveBroadphase();
     const solver = new CANNON.GSSolver();
     solver.iterations = 30;
@@ -141,7 +202,9 @@ export class UselessMachine {
     this.arm = this.buildArm();
     this.armHinge = this.hinge(this.arm, ARM_PIVOT, new CANNON.Vec3(-ARM_HALF, 0, 0));
     this.armHinge.enableMotor();
-    this.armHinge.setMotorMaxForce(18);
+    // Enough force to honour the faster gag speeds (slam/pop); the per-call
+    // speed clamp in driveArm is what actually shapes each motion.
+    this.armHinge.setMotorMaxForce(26);
 
     this.buildLid();
     this.setLever(SWITCH_OFF);
@@ -334,7 +397,7 @@ export class UselessMachine {
   // --- State queries -------------------------------------------------------
 
   get isBusy(): boolean {
-    return this.state !== "idle";
+    return this.queue.length > 0 || this.userFlipping;
   }
   get switchAngle(): number {
     return leverAngleOf(this.lever.quaternion);
@@ -348,17 +411,26 @@ export class UselessMachine {
 
   // --- Debug introspection (read-only; does not affect the simulation) ------
 
-  /** Current state-machine phase. */
+  /** Current state-machine phase (the front segment, or idle/flipping). */
   get phase(): State {
-    return this.state;
+    if (this.queue.length > 0) return this.queue[0].phase;
+    return this.userFlipping ? "flipping" : "idle";
   }
   /** Seconds spent in the current phase. */
   get phaseTime(): number {
     return this.stateTime;
   }
-  /** Whether the user has flipped it ON and the routine hasn't finished. */
+  /** Whether the lever is currently ON. */
   get isOnState(): boolean {
-    return this.isOn;
+    return this.switchAngle > 0;
+  }
+  /** Hidden revenge meter (0 = composed, 1 = livid). Exposed for the debug HUD. */
+  get revengeLevel(): number {
+    return this.revenge;
+  }
+  /** The personality driving the current response. */
+  get currentBehavior(): BehaviorName {
+    return this.behavior;
   }
   /** Labeled physics bodies so a debug overlay can draw their collision shapes. */
   get debugParts(): DebugPart[] {
@@ -378,21 +450,42 @@ export class UselessMachine {
 
   // --- Simulation ----------------------------------------------------------
 
+  /**
+   * The user flips the switch ON. A click only means "turn it ON", so it's
+   * ignored while the lever is already ON or mid-flip. Crucially this works
+   * mid-routine: flip it back ON while the arm is still out and the arm reacts
+   * (a double-take, then another swat), and the revenge meter climbs faster.
+   */
   activate(): void {
-    if (this.isBusy || this.isOn) return;
-    this.isOn = true;
-    // Animate the flip over FLIP_TIME instead of snapping the lever to ON in a
-    // single frame; the lid opening waits until the flip completes.
-    this.state = "flipping";
-    this.stateTime = 0;
+    if (this.userFlipping || this.switchAngle > 0.05) return;
+    const interrupting = this.queue.length > 0; // the arm is still dealing with us
+    this.beginUserFlip();
+    this.revenge = Math.min(1, this.revenge + (interrupting ? REVENGE_REFLIP : REVENGE_FLIP));
+    if (interrupting) this.injectReaction();
+  }
+
+  private beginUserFlip(): void {
+    this.userFlipping = true;
+    this.userFlipT = 0;
+    this.userFlipFrom = this.switchAngle;
+  }
+
+  /** Kinematically sweep the lever toward ON (smoothstep) while a flip is live. */
+  private stepUserFlip(dt: number): void {
+    if (!this.userFlipping) return;
+    this.userFlipT += dt;
+    const t = Math.min(1, this.userFlipT / FLIP_TIME);
+    const s = t * t * (3 - 2 * t);
+    this.setLever(this.userFlipFrom + (SWITCH_ON - this.userFlipFrom) * s);
+    if (t >= 1) this.userFlipping = false;
   }
 
   /** Drive the arm motor toward a target hinge angle (simple P controller). */
-  private driveArm(target: number): void {
+  private driveArm(target: number, maxSpeed = ARM_SPEED): void {
     // Motor speed is about the hinge axis; with base as body A the sign is
     // inverted relative to our angle convention, hence the leading minus.
     const err = target - this.armAngle;
-    const speed = Math.max(-4, Math.min(4, -err * 8));
+    const speed = Math.max(-maxSpeed, Math.min(maxSpeed, -err * 8));
     this.armHinge.setMotorSpeed(speed);
   }
 
@@ -400,7 +493,7 @@ export class UselessMachine {
   private detentLever(): void {
     // While the click-flip animates, the lever is driven kinematically; the
     // detent would pull it back toward OFF until it crosses centre, so hold off.
-    if (this.state === "flipping") return;
+    if (this.userFlipping) return;
     const a = this.switchAngle;
     const target = a >= 0 ? SWITCH_ON : SWITCH_OFF;
     const torque = -6 * (a - target) - 0.5 * this.lever.angularVelocity.z;
@@ -416,7 +509,9 @@ export class UselessMachine {
 
   update(dt: number): void {
     dt = Math.min(dt, 1 / 30);
-    this.runState(dt);
+    if (this.revenge > 0) this.revenge = Math.max(0, this.revenge - REVENGE_DECAY * dt);
+    this.stepUserFlip(dt);
+    this.runQueue(dt);
 
     // Fixed-timestep loop, hand-rolled rather than world.step's accumulator
     // overload (which consults performance.now() and can drop sub-steps —
@@ -439,56 +534,178 @@ export class UselessMachine {
     this.lidPivot.rotation.z = this.lidAngleValue;
   }
 
-  private runState(dt: number): void {
+  // --- Choreography controller ---------------------------------------------
+
+  /** Advance the segment queue, kicking off a fresh response when the arm is
+   *  free and the lever is sitting ON (a flip, or the ON left over by a tease). */
+  private runQueue(dt: number): void {
+    if (this.queue.length === 0 && !this.userFlipping && this.switchAngle > 0) {
+      this.startResponse();
+    }
+    if (this.queue.length === 0) {
+      this.driveArm(ARM_HIDDEN);
+      this.stateTime = 0;
+      return;
+    }
     this.stateTime += dt;
-    switch (this.state) {
-      case "idle":
-        this.driveArm(ARM_HIDDEN);
-        break;
-      case "flipping": {
-        // Kinematically sweep the lever OFF → ON (detent is disabled this phase
-        // so it doesn't fight the animation). smoothstep eases in and out.
-        const t = Math.min(1, this.stateTime / FLIP_TIME);
-        const s = t * t * (3 - 2 * t);
-        this.setLever(SWITCH_OFF + (SWITCH_ON - SWITCH_OFF) * s);
-        this.driveArm(ARM_HIDDEN);
-        if (t >= 1) this.go("opening");
-        break;
-      }
-      case "opening":
-        this.lidAngleValue = Math.min(LID_OPEN, this.lidAngleValue + dt * 6);
-        this.driveArm(ARM_HIDDEN);
-        if (this.lidAngleValue >= LID_OPEN) this.go("extending");
-        break;
-      case "extending":
-        this.driveArm(ARM_OUT);
-        // Keep pushing until the lever is actually knocked past centre (switch
-        // angle goes negative → the detent will carry it the rest of the way to
-        // OFF), not merely until the arm reaches a fixed angle — otherwise it
-        // can retract after a glancing tap and the lever springs back ON.
-        if (this.switchAngle < 0 || this.stateTime > 1.6) this.go("retracting");
-        break;
-      case "retracting":
-        this.driveArm(ARM_HIDDEN);
-        // Wrap-safe shortest-angle distance: ARM_HIDDEN sits near the atan2 cut
-        // at ±π, so a raw subtraction would miss if the motor overshoots past π.
-        if (angleClose(this.armAngle, ARM_HIDDEN, 0.2) || this.stateTime > 1.6) this.go("closing");
-        break;
-      case "closing":
-        this.lidAngleValue = Math.max(0, this.lidAngleValue - dt * 6);
-        this.driveArm(ARM_HIDDEN);
-        if (this.lidAngleValue <= 0) {
-          this.go("idle");
-          // Stay truthful: only the timeout path can reach here with the lever
-          // still ON (a failed knock); don't claim OFF when it isn't.
-          this.isOn = this.switchAngle >= 0;
-        }
-        break;
+    if (this.queue[0].step(dt)) {
+      this.queue.shift();
+      this.stateTime = 0;
     }
   }
 
-  private go(state: State): void {
-    this.state = state;
-    this.stateTime = 0;
+  private startResponse(): void {
+    const b = this.chooseBehavior();
+    this.behavior = b;
+    if (b !== "normal") this.revenge = Math.max(0, this.revenge - REVENGE_SPEND);
+    this.justIgnored = b === "ignore";
+    this.queue = this.buildResponse(b);
+  }
+
+  /** Roll the revenge meter to decide whether this response is a gag, and which.
+   *  Below the floor it always plays it straight; higher revenge unlocks the
+   *  nastier gags and weights toward them. */
+  private chooseBehavior(): BehaviorName {
+    const chance = (this.revenge - REVENGE_GAG_FLOOR) / (1 - REVENGE_GAG_FLOOR);
+    if (chance <= 0 || this.rng() >= chance) return "normal";
+    const pool: BehaviorName[] = ["peek", "creep", "pop", "wiggle", "linger"];
+    if (!this.justIgnored) pool.push("ignore");
+    if (this.revenge > REVENGE_TIER_2) pool.push("feint", "multitap");
+    if (this.revenge > REVENGE_TIER_3) pool.push("slam", "slam", "multitap"); // weight the nasty ones
+    return pool[Math.floor(this.rng() * pool.length)];
+  }
+
+  /** Assemble the segment list for a behavior. */
+  private buildResponse(b: BehaviorName): Segment[] {
+    const armSpeed = b === "creep" ? ARM_SPEED * 0.45 : b === "pop" ? ARM_SPEED * 1.6 : ARM_SPEED;
+    const lidSpeed = b === "pop" ? LID_SPEED * 1.7 : LID_SPEED;
+    const knockSpeed = b === "slam" ? ARM_SPEED * 1.5 : armSpeed;
+    const closeSpeed = b === "slam" ? LID_SPEED * 2.4 : lidSpeed;
+
+    // The tease: lid cracks open, nothing emerges, lid shuts — switch stays ON,
+    // so the controller comes straight back with a real (non-ignore) response.
+    if (b === "ignore") {
+      return [
+        this.segLid(LID_PEEK, lidSpeed, "ignoring"),
+        this.segWait(0.45, "ignoring", ARM_HIDDEN),
+        this.segLid(0, lidSpeed, "ignoring"),
+      ];
+    }
+
+    const q: Segment[] = [this.segLid(LID_OPEN, lidSpeed, "opening")];
+
+    if (b === "peek") {
+      q.push(this.segArm(PEEK_ANGLE, armSpeed, "peeking"));
+      q.push(this.segWait(0.4, "peeking", PEEK_ANGLE));
+    } else if (b === "feint") {
+      q.push(this.segArm(FEINT_ANGLE, armSpeed * 1.3, "peeking"));
+      q.push(this.segArm(ARM_HIDDEN, armSpeed * 1.3, "peeking")); // retreat — the fake-out
+      q.push(this.segWait(0.3, "peeking", ARM_HIDDEN));
+    }
+
+    q.push(this.segArm(ARM_OUT, knockSpeed, "extending", true));
+
+    if (b === "multitap") {
+      // Angry little jabs above the deck (the lever's already snapped clear).
+      for (let i = 0; i < 2; i++) {
+        q.push(this.segArm(ARM_OUT + 0.22, knockSpeed * 1.4, "flourish"));
+        q.push(this.segArm(ARM_OUT, knockSpeed * 1.4, "flourish"));
+      }
+    }
+
+    if (b === "wiggle") {
+      q.push(this.segWiggle(1.9, 0.28, 2.5, 0.7, "taunting")); // a taunting waggle
+    } else if (b === "linger") {
+      q.push(this.segWait(0.6, "taunting", ARM_OUT)); // hangs out, "looking at you"
+    }
+
+    q.push(this.segArm(ARM_HIDDEN, armSpeed, "retracting"));
+    q.push(this.segLid(0, closeSpeed, "closing"));
+    return q;
+  }
+
+  /** Re-press reaction: recoil clear of the switch (so your flip-up actually
+   *  lands instead of bonking the arm), hold a beat to "look", then swat it
+   *  again — harder the angrier it is. Replaces the rest of the queue. */
+  private injectReaction(): void {
+    const swat = this.revenge > REVENGE_TIER_3 ? ARM_SPEED * 1.6 : ARM_SPEED * 1.2;
+    this.behavior = "doubletake";
+    this.justIgnored = false;
+    // NB: a re-press only *adds* revenge (REVENGE_REFLIP) — unlike a rolled gag
+    // it never spends any. Impatient re-pressing is meant to wind it right up.
+    this.stateTime = 0; // the reaction replaces a mid-flight segment — restart the clock
+    this.queue = [
+      // Reopen the lid first (no-op if already open): if the re-press lands
+      // during "closing", the arm must not sweep up through a half-shut lid.
+      this.segLid(LID_OPEN, LID_SPEED * 1.5, "opening"),
+      this.segArm(REACT_COCK, ARM_SPEED * 1.5, "doubletake"), // recoil, clearing the lever
+      this.segWait(0.22, "doubletake", REACT_COCK), // the "look"
+      this.segArm(ARM_OUT, swat, "extending", true), // SWAT
+      this.segArm(ARM_HIDDEN, ARM_SPEED, "retracting"),
+      this.segLid(0, LID_SPEED, "closing"),
+    ];
+  }
+
+  // --- Segment factories ----------------------------------------------------
+
+  /** Drive the lid toward an angle at `speed`; done on arrival. Arm held home. */
+  private segLid(target: number, speed: number, phase: State): Segment {
+    return {
+      phase,
+      step: (dt) => {
+        this.driveArm(ARM_HIDDEN);
+        const d = target - this.lidAngleValue;
+        const move = speed * dt;
+        if (Math.abs(d) <= move) {
+          this.lidAngleValue = target;
+          return true;
+        }
+        this.lidAngleValue += Math.sign(d) * move;
+        return false;
+      },
+    };
+  }
+
+  /** Drive the arm toward `target`; done on arrival, on a knock (untilFlip), or
+   *  after a safety timeout so a botched knock can never wedge the queue. */
+  private segArm(target: number, speed: number, phase: State, untilFlip = false): Segment {
+    return {
+      phase,
+      step: () => {
+        this.driveArm(target, speed);
+        if (untilFlip && this.switchAngle < 0) return true;
+        if (angleClose(this.armAngle, target, 0.12)) return true;
+        if (this.stateTime > 2) {
+          // The knock somehow never landed (physics regression / wedge). Give up
+          // gracefully — force the lever OFF — rather than re-firing forever.
+          if (untilFlip && this.switchAngle > 0) this.setLever(SWITCH_OFF);
+          return true;
+        }
+        return false;
+      },
+    };
+  }
+
+  /** Hold the arm at `armHold` for `duration` seconds. */
+  private segWait(duration: number, phase: State, armHold: number): Segment {
+    return {
+      phase,
+      step: () => {
+        this.driveArm(armHold);
+        return this.stateTime >= duration;
+      },
+    };
+  }
+
+  /** Oscillate the arm around `base` for a taunting waggle. */
+  private segWiggle(base: number, amp: number, cycles: number, duration: number, phase: State): Segment {
+    return {
+      phase,
+      step: () => {
+        const t = Math.min(1, this.stateTime / duration);
+        this.driveArm(base + amp * Math.sin(2 * Math.PI * cycles * t), ARM_SPEED * 1.5);
+        return this.stateTime >= duration;
+      },
+    };
   }
 }

@@ -141,6 +141,10 @@ interface Telemetry {
   /** Precise arm↔lever overlap depth (OBB SAT); 0 when separated. */
   penetration: number;
   activeContacts: string[];
+  /** Hidden revenge meter (0 = composed, 1 = livid) driving gag chance. */
+  revenge: number;
+  /** Personality of the current response (normal / a gag name / doubletake). */
+  behavior: string;
   timeScale: number;
   paused: boolean;
   fps: number;
@@ -873,6 +877,8 @@ export class DebugMenu {
       armLeverGap: this.armLeverGap(),
       penetration: this.penetrationDepth(),
       activeContacts: [...this.activeContacts],
+      revenge: m.revengeLevel,
+      behavior: m.currentBehavior,
       timeScale: this.timeScale,
       paused: this.paused,
       fps: this.fps,
@@ -1030,6 +1036,8 @@ export class DebugMenu {
       `lid       ${t.lidAngle.toFixed(3)} rad\n` +
       `arm↔lever ${t.armLeverGap >= 0 ? "gap " : "PEN "}${Math.abs(t.armLeverGap).toFixed(3)}\n` +
       `overlap   ${t.penetration.toFixed(3)} m${t.penetration > PASS_THROUGH_DEPTH ? "  ⚠ pass-through" : ""}\n` +
+      `behavior  ${t.behavior}\n` +
+      `revenge   ${t.revenge.toFixed(2)}  ${revengeBar(t.revenge)}\n` +
       `contacts  ${t.activeContacts.length ? t.activeContacts.join(", ") : "none"}\n` +
       `time      ${t.timeScale}×  ${t.paused ? "(paused)" : ""}\n` +
       `fps       ${t.fps.toFixed(0)}`;
@@ -1106,6 +1114,12 @@ function el(tag: string, className: string, text = ""): HTMLElement {
   node.className = className;
   if (text) node.textContent = text;
   return node;
+}
+
+/** A tiny 10-cell meter for the revenge level, e.g. ▓▓▓▓░░░░░░. */
+function revengeBar(level: number): string {
+  const filled = Math.round(Math.max(0, Math.min(1, level)) * 10);
+  return "▓".repeat(filled) + "░".repeat(10 - filled);
 }
 
 function btn(text: string, onClick: () => void): HTMLButtonElement {

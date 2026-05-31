@@ -40,9 +40,23 @@ and switch can never interpenetrate. The world runs without gravity: it's a
 tabletop mechanism whose every resting state is defined by the motor and the
 bistable detent.
 
+## Personality
+
+The arm isn't a robot following one routine — it holds a grudge. The switch is
+**interruptible**: flip it back ON before the arm is home and it reacts (a
+recoil, a beat, then another swat). A hidden **revenge meter** winds up as you
+flip it back and forth (and faster when you re-press mid-routine) and bleeds off
+when you leave it alone. The higher it climbs, the likelier — and nastier — the
+next *gag*: a cautious peek, a fake-out feint, a slow creep or eager pop, an
+angry slam, machine-gun multi-taps, a taunting wiggle or lingering stare, or
+simply ignoring you (the lid cracks and shuts with no arm at all). The choreography
+is a queue of segments per response; the knock is always a real collision, and
+every gag still ends with the switch OFF. The meter is hidden in play but shown
+in the debug panel (press **D**).
+
 ## Test
 
-Because the behaviour is a deterministic simulation, it's verified by **stepping
+The simulation is deterministic given its inputs, so it's verified by **stepping
 the physics and asserting the outcome** — no GPU, no screenshots to maintain:
 
 ```bash
@@ -53,8 +67,11 @@ npm run test:watch
 [`src/UselessMachine.test.ts`](src/UselessMachine.test.ts) drives the sim and
 checks behaviour, not pixels: it starts OFF and idle; `activate()` flips it ON;
 stepping the world to completion knocks it back to OFF; the lever stays within
-its travel (end-stops, no fling-past); the arm returns inside the box; and
-clicks are ignored mid-routine.
+its travel (end-stops, no fling-past); and the arm returns inside the box. The
+personality is tested too — a calm flip plays it straight, a re-press is honoured
+mid-routine and triggers a double-take, the revenge meter accumulates and decays,
+and **every gag still ends with the switch OFF**. Gag selection takes an
+injectable seed (`new UselessMachine({ rng })`) so those tests stay deterministic.
 
 > Want to eyeball a frame? `?test` mode in [`src/main.ts`](src/main.ts) exposes
 > `window.__useless.frameAt(seconds)` and `setView(name)` (`hero`, `side`,

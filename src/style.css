@@ -27,20 +27,6 @@ body {
   display: block;
 }
 
-#hint {
-  position: fixed;
-  bottom: 1.5rem;
-  left: 0;
-  right: 0;
-  text-align: center;
-  color: rgba(255, 255, 255, 0.55);
-  font-size: 0.9rem;
-  letter-spacing: 0.02em;
-  pointer-events: none;
-  user-select: none;
-  transition: opacity 0.4s ease;
-}
-
 /* ---- Debug menu ---------------------------------------------------------- */
 
 .dbg-fab {

@@ -41,7 +41,7 @@ declare global {
 }
 
 test.beforeEach(async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/?debug");
   await page.waitForFunction("() => window.__uselessDebug?.ready === true");
 });
 

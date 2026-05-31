@@ -52,7 +52,8 @@ angry slam, machine-gun multi-taps, a taunting wiggle or lingering stare, or
 simply ignoring you (the lid cracks and shuts with no arm at all). The choreography
 is a queue of segments per response; the knock is always a real collision, and
 every gag still ends with the switch OFF. The meter is hidden in play but shown
-in the debug panel (press **D**).
+in the debug panel, which lives behind the `?debug` URL param (then press **D**
+to toggle it).
 
 ## Test
 

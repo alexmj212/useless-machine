@@ -49,7 +49,7 @@ const READY = "() => window.__uselessDebug?.ready === true";
 
 test.describe("useless machine debug menu", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/?debug");
     await page.waitForFunction(READY);
   });
 

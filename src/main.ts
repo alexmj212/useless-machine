@@ -13,9 +13,11 @@ const testMode = params.has("test");
 // on its own — for compositing into a stream/OBS browser source. The lighting
 // (incl. the environment probe) is identical; only the backdrop is dropped.
 const overlay = params.has("overlay");
+// Debug mode: attach the debug menu (FAB + panel + automation API). Off by
+// default so the live page is just the machine; opt in with ?debug.
+const debugEnabled = params.has("debug");
 
 const app = document.getElementById("app")!;
-const hint = document.getElementById("hint");
 
 const scene = new THREE.Scene();
 scene.background = overlay ? null : new THREE.Color(0x14161a);
@@ -121,6 +123,9 @@ window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// ?test takes over the whole animation loop (deterministic, test-driven), so
+// ?debug is ignored when both are present — the debug menu only attaches in the
+// live interactive path.
 if (testMode) {
   setupTestMode();
 } else {
@@ -144,7 +149,6 @@ function setupInteractive(): void {
     // debounces itself (it no-ops while the lever is already ON or mid-flip).
     if (pointsAtSwitch(event)) {
       machine.activate();
-      if (hint) hint.style.opacity = "0";
     }
   });
 
@@ -170,27 +174,33 @@ function setupInteractive(): void {
       pointsAtSwitch(event) && !machine.isOnState ? "pointer" : "grab";
   });
 
-  // The debug menu reads the machine and drives time; it never alters the sim.
-  const debug = new DebugMenu({
-    scene,
-    getMachine: () => machine,
-    rebuild: () => {
-      scene.remove(machine.root);
-      machine = new UselessMachine();
-      scene.add(machine.root);
-      return machine;
-    },
-    render,
-  });
+  // The debug menu (behind ?debug) reads the machine and drives time; it never
+  // alters the sim. When it's off we step the machine ourselves so the live page
+  // carries no debug machinery at all.
+  const debug = debugEnabled
+    ? new DebugMenu({
+        scene,
+        getMachine: () => machine,
+        rebuild: () => {
+          scene.remove(machine.root);
+          machine = new UselessMachine();
+          scene.add(machine.root);
+          return machine;
+        },
+        render,
+      })
+    : undefined;
 
   const clock = new THREE.Clock();
   renderer.setAnimationLoop(() => {
-    debug.frame(Math.min(clock.getDelta(), 0.05));
+    const dt = Math.min(clock.getDelta(), 0.05);
+    if (debug) debug.frame(dt);
+    else machine.update(dt);
     render();
   });
 
   // Under Vite HMR, tear the menu down so its global listeners don't stack.
-  import.meta.hot?.dispose(() => debug.dispose());
+  import.meta.hot?.dispose(() => debug?.dispose());
 }
 
 /**
@@ -198,8 +208,6 @@ function setupInteractive(): void {
  * moment deterministically (no real-time clock, no race conditions).
  */
 function setupTestMode(): void {
-  if (hint) hint.style.display = "none";
-
   // Named camera angles so visual tests can inspect each moment from several
   // viewpoints — overlaps/clipping that one angle hides are obvious in another.
   const views: Record<string, { pos: [number, number, number]; target: [number, number, number] }> = {

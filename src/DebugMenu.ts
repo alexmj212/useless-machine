@@ -7,6 +7,7 @@ import {
   ARM_OUT,
   FIXED_DT,
   type DebugPart,
+  type BehaviorName,
 } from "./UselessMachine.js";
 import {
   obbPenetrationDepth,
@@ -71,6 +72,8 @@ export interface DebugApi {
   seekPhase: (name: string) => void;
   reset: () => void;
   activate: () => void;
+  /** Force a specific behavior/gag on demand (bypasses the revenge roll). */
+  playBehavior: (name: BehaviorName) => void;
   setCollisionBoxes: (on: boolean) => void;
   setPivots: (on: boolean) => void;
   setContactPoints: (on: boolean) => void;
@@ -162,6 +165,22 @@ const KEYPOINTS: { name: string; t: number }[] = [
   { name: "retracting", t: 1.05 },
   { name: "closing", t: 1.4 },
   { name: "settled", t: 1.75 },
+];
+
+// Every behavior the arm can play, for the debug menu's "Variations" buttons.
+// Triggering one forces it directly, bypassing the revenge roll.
+const VARIATIONS: { name: BehaviorName; label: string }[] = [
+  { name: "normal", label: "Normal" },
+  { name: "peek", label: "Peek" },
+  { name: "feint", label: "Feint" },
+  { name: "creep", label: "Creep" },
+  { name: "pop", label: "Pop" },
+  { name: "slam", label: "Slam" },
+  { name: "multitap", label: "Multi-tap" },
+  { name: "wiggle", label: "Wiggle" },
+  { name: "linger", label: "Linger" },
+  { name: "ignore", label: "Ignore" },
+  { name: "doubletake", label: "Double-take" },
 ];
 
 const TIME_SCALES = [0.1, 0.25, 0.5, 1, 2];
@@ -825,6 +844,13 @@ export class DebugMenu {
     this.log_("info", "machine reset");
   }
 
+  /** Force a specific behavior so it can be inspected on demand. */
+  private playBehavior(name: BehaviorName): void {
+    this.setPaused(false);
+    this.machine.debugPlay(name);
+    this.log_("info", `play behavior → ${name}`);
+  }
+
   // --- Logging --------------------------------------------------------------
 
   private log_(level: Level, msg: string): void {
@@ -923,6 +949,12 @@ export class DebugMenu {
       const b = btn(`${s}×`, () => this.setTimeScale(s));
       this.scaleButtons.set(s, b);
       scales.appendChild(b);
+    }
+
+    // Variations: force any gag on demand (bypasses the revenge roll).
+    const variations = this.section("Variations");
+    for (const v of VARIATIONS) {
+      variations.appendChild(btn(v.label, () => this.playBehavior(v.name)));
     }
 
     // Keypoints.
@@ -1087,6 +1119,7 @@ export class DebugMenu {
         this.setPaused(false);
         this.machine.activate();
       },
+      playBehavior: (name: BehaviorName) => this.playBehavior(name),
       // Overlay.
       setCollisionBoxes: (on: boolean) => {
         this.collisionToggle.checked = on;

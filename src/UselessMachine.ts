@@ -471,6 +471,19 @@ export class UselessMachine {
     this.userFlipFrom = this.switchAngle;
   }
 
+  /**
+   * Debug only: force a specific behavior on demand, bypassing the revenge roll.
+   * Flips the lever ON if needed (so the knock has something to hit) and replaces
+   * whatever the arm was doing. Used by the debug menu's per-variation buttons.
+   */
+  debugPlay(b: BehaviorName): void {
+    if (this.switchAngle < 0 && !this.userFlipping) this.beginUserFlip();
+    this.behavior = b;
+    this.justIgnored = false;
+    this.stateTime = 0;
+    this.queue = b === "doubletake" ? this.buildReaction("doubletake") : this.buildResponse(b);
+  }
+
   /** Kinematically sweep the lever toward ON (smoothstep) while a flip is live. */
   private stepUserFlip(dt: number): void {
     if (!this.userFlipping) return;
@@ -648,13 +661,18 @@ export class UselessMachine {
     // NB: a re-press only *adds* revenge (REVENGE_REFLIP) — unlike a rolled gag
     // it never spends any. Impatient re-pressing is meant to wind it right up.
     this.stateTime = 0; // the reaction replaces a mid-flight segment — restart the clock
-    this.queue = [
-      // Reopen the lid first (no-op if already open): if the re-press lands
-      // during "closing", the arm must not sweep up through a half-shut lid.
+    this.queue = this.buildReaction(flavor);
+  }
+
+  /** The double-take reaction: reopen the lid (no-op if already open — guards a
+   *  re-press during "closing"), recoil clear of the lever so your flip lands,
+   *  hold the long "look", then swat in the given flavor. */
+  private buildReaction(flavor: BehaviorName): Segment[] {
+    return [
       this.segLid(LID_OPEN, LID_SPEED * 1.5, "opening"),
       this.segArm(REACT_COCK, ARM_SPEED * 1.5, "doubletake"), // recoil, clearing the lever
       this.segWait(REACT_LOOK, "doubletake", REACT_COCK), // the long "look"
-      ...this.knockAndExit(flavor), // ...then swat, in the rolled flavor
+      ...this.knockAndExit(flavor),
     ];
   }
 

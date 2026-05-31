@@ -105,9 +105,18 @@ describe("UselessMachine — personality (revenge + gags)", () => {
     const before = m.revengeLevel;
     m.activate(); // re-press mid-routine — must NOT be ignored
     expect(m.revengeLevel).toBeGreaterThan(before); // provoked
-    expect(m.currentBehavior).toBe("doubletake"); // reaction set synchronously
-    for (let i = 0; i < 12; i++) m.update(1 / 60);
-    expect(m.switchAngle).toBeGreaterThan(0); // the re-flip took effect
+
+    // The reaction recoils through the "doubletake" phase, the re-flip lands ON,
+    // and the swat then knocks it OFF again.
+    let sawDoubletake = false;
+    let sawOn = false;
+    for (let i = 0; i < 40; i++) {
+      m.update(1 / 60);
+      if (m.phase === "doubletake") sawDoubletake = true;
+      if (m.switchAngle > 0.3) sawOn = true;
+    }
+    expect(sawDoubletake).toBe(true);
+    expect(sawOn).toBe(true);
 
     settle(m);
     expect(m.switchAngle).toBeLessThan(0); // still ends OFF

@@ -137,8 +137,9 @@ const REVENGE_REFLIP = 0.4; // a flip while the arm is still out really provokes
 const REVENGE_DECAY = 0.03; // per second, slowly drifting back toward composure
 const REVENGE_GAG_FLOOR = 0.2; // at/below this it always plays it straight
 const REVENGE_SPEND = 0.4; // a fired gag vents this much pressure
-const REVENGE_TIER_2 = 0.45; // unlocks feint / multi-tap
+const REVENGE_TIER_2 = 0.45; // unlocks the feint
 const REVENGE_TIER_3 = 0.6; // unlocks the slam (and an angrier re-press swat)
+const REVENGE_TIER_4 = 0.8; // unlocks the frantic multi-tap — needs to be livid
 
 /** One step of the arm/lid choreography. `step` returns true when it's done. */
 interface Segment {
@@ -584,8 +585,9 @@ export class UselessMachine {
     if (chance <= 0 || this.rng() >= chance) return "normal";
     const pool: BehaviorName[] = ["peek", "creep", "pop", "wiggle", "linger"];
     if (!this.justIgnored) pool.push("ignore");
-    if (this.revenge > REVENGE_TIER_2) pool.push("feint", "multitap");
-    if (this.revenge > REVENGE_TIER_3) pool.push("slam", "slam", "multitap"); // weight the nasty ones
+    if (this.revenge > REVENGE_TIER_2) pool.push("feint");
+    if (this.revenge > REVENGE_TIER_3) pool.push("slam", "slam");
+    if (this.revenge > REVENGE_TIER_4) pool.push("multitap", "multitap"); // only when livid
     return pool[Math.floor(this.rng() * pool.length)];
   }
 
@@ -593,17 +595,26 @@ export class UselessMachine {
   private buildResponse(b: BehaviorName): Segment[] {
     if (b === "ignore") return this.ignoreSegments();
 
-    const lidSpeed = b === "pop" ? LID_SPEED * 1.7 : LID_SPEED;
+    // Pop flings the lid open; everyone else opens at the normal rate.
+    const lidSpeed = b === "pop" ? LID_SPEED * 2.2 : LID_SPEED;
     const q: Segment[] = [this.segLid(LID_OPEN, lidSpeed, "opening")];
 
     // Rise flourishes before the knock.
     if (b === "peek") {
-      q.push(this.segArm(PEEK_ANGLE, ARM_SPEED, "peeking"));
-      q.push(this.segWait(0.4, "peeking", PEEK_ANGLE));
+      // Cautious: ease up, peer out, duck back, peek again — a nervous double-check.
+      q.push(this.segArm(PEEK_ANGLE, ARM_SPEED * 0.6, "peeking"));
+      q.push(this.segWait(0.3, "peeking", PEEK_ANGLE));
+      q.push(this.segArm(PEEK_ANGLE + 0.35, ARM_SPEED * 0.6, "peeking")); // duck back down
+      q.push(this.segArm(PEEK_ANGLE, ARM_SPEED * 0.6, "peeking")); // ...peek again
+      q.push(this.segWait(0.35, "peeking", PEEK_ANGLE));
     } else if (b === "feint") {
       q.push(this.segArm(FEINT_ANGLE, ARM_SPEED * 1.3, "peeking"));
       q.push(this.segArm(ARM_HIDDEN, ARM_SPEED * 1.3, "peeking")); // retreat — the fake-out
       q.push(this.segWait(0.3, "peeking", ARM_HIDDEN));
+    } else if (b === "slam") {
+      // Wind up: cock back over the opening and hang for a beat before the chop.
+      q.push(this.segArm(2.15, ARM_SPEED * 1.2, "peeking"));
+      q.push(this.segWait(0.14, "peeking", 2.15));
     }
 
     q.push(...this.knockAndExit(b));
@@ -613,10 +624,12 @@ export class UselessMachine {
   /** The knock and everything after it (flourish, exit, retract, close) — shared
    *  by fresh responses and by the re-press reaction. */
   private knockAndExit(b: BehaviorName): Segment[] {
-    const armSpeed = b === "creep" ? ARM_SPEED * 0.45 : b === "pop" ? ARM_SPEED * 1.6 : ARM_SPEED;
+    // pop = eager (everything quick, but a calm close); slam = a single violent
+    // chop and a hard lid SLAM shut.
+    const armSpeed = b === "creep" ? ARM_SPEED * 0.45 : b === "pop" ? ARM_SPEED * 2 : ARM_SPEED;
     const knockSpeed =
-      b === "slam" ? ARM_SPEED * 1.6 : b === "doubletake" ? ARM_SPEED * 1.3 : armSpeed;
-    const closeSpeed = b === "slam" ? LID_SPEED * 2.4 : b === "pop" ? LID_SPEED * 1.7 : LID_SPEED;
+      b === "slam" ? ARM_SPEED * 1.9 : b === "doubletake" ? ARM_SPEED * 1.5 : armSpeed;
+    const closeSpeed = b === "slam" ? LID_SPEED * 2.6 : LID_SPEED;
 
     const q: Segment[] = [this.segArm(ARM_OUT, knockSpeed, "extending", true)];
 
@@ -625,9 +638,11 @@ export class UselessMachine {
     }
 
     if (b === "wiggle") {
-      q.push(this.segWiggle(1.9, 0.28, 2.5, 0.7, ARM_SPEED * 1.5, "taunting")); // taunting waggle
+      // Big, slow, taunting sweeps across the opening (kept above 1.55 rad so the
+      // shaft never clips the deck frame).
+      q.push(this.segWiggle(2.05, 0.5, 3, 1.1, ARM_SPEED * 3, "taunting"));
     } else if (b === "linger") {
-      q.push(this.segWait(0.6, "taunting", ARM_OUT)); // hangs out, "looking at you"
+      q.push(this.segWait(1.3, "taunting", ARM_OUT)); // hangs out a long beat, "looking at you"
     }
 
     q.push(this.segArm(ARM_HIDDEN, armSpeed, "retracting"));
@@ -680,8 +695,9 @@ export class UselessMachine {
    *  least a plain double-take; the nastier flavors unlock as it winds up. */
   private rollReactionFlavor(): BehaviorName {
     const pool: BehaviorName[] = ["doubletake"];
-    if (this.revenge > REVENGE_TIER_2) pool.push("multitap", "wiggle");
-    if (this.revenge > REVENGE_TIER_3) pool.push("slam", "slam", "multitap");
+    if (this.revenge > REVENGE_TIER_2) pool.push("wiggle");
+    if (this.revenge > REVENGE_TIER_3) pool.push("slam", "slam");
+    if (this.revenge > REVENGE_TIER_4) pool.push("multitap"); // only when livid
     return pool[Math.floor(this.rng() * pool.length)];
   }
 

@@ -24,9 +24,11 @@ const OPEN_X_MIN = -0.5;
 const OPEN_X_MAX = 0.5;
 const OPEN_Z_HALF = 0.5;
 
-// Switch: mounted at the right lip of the opening so the arm can reach it
-// straight up through the hole.
-export const SWITCH_POS = new THREE.Vector3(0.6, TOP_Y, 0);
+// Switch: mounted well to the +X side of the opening, clear of the lid. When ON
+// it leans -X, but stays right of the opening edge (x > 0.5) so the lid panel —
+// which sweeps up out of the hole — never passes through it. The arm reaches it
+// with an extended knocker that juts out over the deck (see below).
+export const SWITCH_POS = new THREE.Vector3(0.9, TOP_Y, 0);
 const LEVER_LEN = 0.5;
 const LEVER_HALF = LEVER_LEN / 2;
 export const SWITCH_ON = 0.5; // lever tilt (rad): +ve leans -X, over the opening
@@ -39,13 +41,19 @@ export const SWITCH_OFF = -0.5; // -ve leans +X, onto the deck
 export const ARM_PIVOT = new THREE.Vector3(0.45, 0.3, 0);
 const ARM_LEN = 1.05;
 const ARM_HALF = ARM_LEN / 2;
+// The knocker is an L: a head that juts off the shaft tip toward the shaft's
+// local -Y. At ARM_OUT the shaft is vertical (local -Y points world +X), so the
+// head reaches sideways over the deck to the switch — the shaft can stay inside
+// the opening while the head pokes the lever, which sits past the opening edge.
+const KNOCKER_LEN = 0.5;
+const KNOCKER_HALF = KNOCKER_LEN / 2;
 // Hidden: laid almost flat, pointing -X across the cavity (kept just shy of π so
 // the arm-angle reading stays clear of the atan2 branch cut at ±π).
 export const ARM_HIDDEN = 3.0;
-// Out: swung up to near-vertical so the finger rises through the opening and
-// taps the lever from its -X side, pushing it ON → OFF. The whole sweep stays
-// within x ∈ [-0.5, 0.5] at deck level, so it never clips the frame.
-export const ARM_OUT = 1.5;
+// Out: shaft swung to vertical (π/2) so it rises straight through the opening at
+// x = ARM_PIVOT.x (inside the hole, never clipping the frame) while the knocker
+// head reaches +X to tap the lever from its -X side, pushing it ON → OFF.
+export const ARM_OUT = Math.PI / 2;
 
 export const LID_OPEN = 1.95;
 
@@ -208,12 +216,16 @@ export class UselessMachine {
     const group = new THREE.Group();
     const lever = new THREE.Mesh(
       new THREE.BoxGeometry(0.09, LEVER_LEN, 0.16),
-      new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.4, metalness: 0.1 }),
+      // Brushed silver. metalness is kept moderate (like the arm) so the light
+      // base colour reads as silver — at near-1.0 metalness with no environment
+      // map a metal goes near-black except for direct highlights.
+      new THREE.MeshStandardMaterial({ color: 0xccd0d6, roughness: 0.35, metalness: 0.6 }),
     );
     lever.castShadow = true;
     const knob = new THREE.Mesh(
       new THREE.SphereGeometry(0.09, 20, 16),
-      new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.3 }),
+      // Polished silver ball-top — a touch shinier than the shaft.
+      new THREE.MeshStandardMaterial({ color: 0xdee1e5, roughness: 0.2, metalness: 0.7 }),
     );
     knob.position.set(0, LEVER_HALF, 0);
     knob.castShadow = true;
@@ -226,10 +238,14 @@ export class UselessMachine {
 
   private buildArm(): CANNON.Body {
     const body = new CANNON.Body({ mass: 1 });
+    // Shape 0: the shaft, along local +X.
     body.addShape(new CANNON.Box(new CANNON.Vec3(ARM_HALF, 0.04, 0.065)));
+    // Shape 1: the knocker head, hanging off the shaft tip in local -Y so it
+    // reaches sideways to the switch when the shaft is vertical. (The debug
+    // overlay treats shape index 1 as the contacting "finger".)
     body.addShape(
-      new CANNON.Box(new CANNON.Vec3(0.06, 0.1, 0.08)),
-      new CANNON.Vec3(ARM_HALF - 0.05, 0, 0),
+      new CANNON.Box(new CANNON.Vec3(0.05, KNOCKER_HALF, 0.08)),
+      new CANNON.Vec3(ARM_HALF, -KNOCKER_HALF, 0),
     );
     body.angularDamping = 0.4;
     this.world.addBody(body);
@@ -237,11 +253,11 @@ export class UselessMachine {
     const mat = new THREE.MeshStandardMaterial({ color: 0xcfd2d6, roughness: 0.35, metalness: 0.6 });
     const group = new THREE.Group();
     const bar = new THREE.Mesh(new THREE.BoxGeometry(ARM_LEN, 0.08, 0.13), mat);
-    const finger = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.2, 0.16), mat);
-    finger.position.set(ARM_HALF - 0.05, 0, 0);
+    const knocker = new THREE.Mesh(new THREE.BoxGeometry(0.1, KNOCKER_LEN, 0.16), mat);
+    knocker.position.set(ARM_HALF, -KNOCKER_HALF, 0);
     bar.castShadow = true;
-    finger.castShadow = true;
-    group.add(bar, finger);
+    knocker.castShadow = true;
+    group.add(bar, knocker);
     this.root.add(group);
     this.links.push({ mesh: group, body });
     return body;

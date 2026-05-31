@@ -148,16 +148,16 @@ interface Telemetry {
 
 // Phase → representative timeline second, so each keypoint button lands inside
 // the phase it names. Tuned to the actual routine: the lid opens (~0.33s), the
-// arm sweeps up and taps the lever past centre (~0.8s), then retracts and the
+// arm sweeps up and taps the lever past centre (~0.7s), then retracts and the
 // lid closes (~1.5s total).
 const KEYPOINTS: { name: string; t: number }[] = [
   { name: "idle", t: 0 },
-  { name: "opening", t: 0.18 },
-  { name: "extending", t: 0.62 },
-  { name: "contact", t: 0.82 },
-  { name: "retracting", t: 1.0 },
-  { name: "closing", t: 1.35 },
-  { name: "settled", t: 1.7 },
+  { name: "opening", t: 0.2 },
+  { name: "extending", t: 0.55 },
+  { name: "contact", t: 0.72 },
+  { name: "retracting", t: 0.95 },
+  { name: "closing", t: 1.3 },
+  { name: "settled", t: 1.6 },
 ];
 
 const TIME_SCALES = [0.1, 0.25, 0.5, 1, 2];
@@ -172,7 +172,7 @@ const EXPECTED_CONTACTS: ExpectedContact[] = [
   {
     name: "arm-knocks-lever",
     during: ["extending", "retracting"],
-    point: { x: 0.5, y: 1.3, z: 0 },
+    point: { x: 0.8, y: 1.42, z: 0 },
     tolerance: 0.15,
   },
 ];
@@ -233,7 +233,7 @@ export class DebugMenu {
   private maxPenetration = 0;
   private passThrough = false;
   private tunnelEvents = 0;
-  private prevFingerTip: Vec2 | null = null;
+  private prevFingerTips: Vec2[] | null = null;
 
   // DOM.
   private root!: HTMLDivElement;
@@ -324,7 +324,7 @@ export class DebugMenu {
     this.maxPenetration = 0;
     this.passThrough = false;
     this.tunnelEvents = 0;
-    this.prevFingerTip = null;
+    this.prevFingerTips = null;
   }
 
   /** Drop contact listeners from the current world before it is discarded. */
@@ -459,13 +459,14 @@ export class DebugMenu {
       );
     }
 
-    const gap = this.armLeverGap();
-    if (!isFinite(gap)) {
-      this.warn("gap-nan", "could not measure arm↔lever clearance (a body is missing)");
-    } else if (gap < -0.03) {
+    // Use the precise OBB overlap, not the AABB gap: the knocker is long and
+    // rotates ~90°, and an axis-aligned box of a rotated bar inflates enough to
+    // report phantom overlap. A real solver leak shows up as OBB penetration.
+    const pen = this.penetrationDepth();
+    if (pen > 0.03) {
       this.warn(
         "interpenetration",
-        `arm and lever interpenetrate by ${(-gap).toFixed(3)} (solver let shapes overlap)`,
+        `arm and lever interpenetrate by ${pen.toFixed(3)} (solver let shapes overlap)`,
       );
     }
   }
@@ -548,13 +549,24 @@ export class DebugMenu {
     return { cx: c.x, cy: c.y, hx: he.x, hy: he.y, angle: this.bodyZAngle(this.leverBody) };
   }
 
-  /** Leading point of the finger — the vertex that should strike the lever. */
-  private fingerTip(): Vec2 {
+  /** The two leading corners of the knocker's far (-Y) face — the edge that
+   *  meets the lever. The head juts along the shaft's local -Y (world
+   *  (sin a, -cos a)); its face spans ±he.x along local +X (world (cos a, sin a)).
+   *  Tracking both corners, not just the face centre, keeps the tunnelling check
+   *  honest for the wide knocker bar (a single centre point sails past the lever). */
+  private fingerTips(): Vec2[] {
     const idx = this.fingerIndex;
     const he = (this.armBody.shapes[idx] as CANNON.Box).halfExtents;
     const c = this.shapeCenter2D(this.armBody, idx);
     const a = this.bodyZAngle(this.armBody);
-    return { x: c.x + Math.cos(a) * he.x, y: c.y + Math.sin(a) * he.x };
+    const fx = Math.sin(a) * he.y;
+    const fy = -Math.cos(a) * he.y; // local -Y · he.y (out to the far face)
+    const ex = Math.cos(a) * he.x;
+    const ey = Math.sin(a) * he.x; // local +X · he.x (along the face)
+    return [
+      { x: c.x + fx + ex, y: c.y + fy + ey },
+      { x: c.x + fx - ex, y: c.y + fy - ey },
+    ];
   }
 
   private penetrationDepth(): number {
@@ -583,15 +595,20 @@ export class DebugMenu {
       );
     }
 
-    const tip = this.fingerTip();
-    if (this.prevFingerTip && sweptThrough(this.prevFingerTip, tip, lever)) {
-      this.tunnelEvents++;
-      this.error(
-        "tunnel",
-        "arm finger swept clean through the lever (tunnelling — collision missed)",
-      );
+    const tips = this.fingerTips();
+    if (this.prevFingerTips) {
+      for (let i = 0; i < tips.length; i++) {
+        if (sweptThrough(this.prevFingerTips[i], tips[i], lever)) {
+          this.tunnelEvents++;
+          this.error(
+            "tunnel",
+            "arm knocker swept clean through the lever (tunnelling — collision missed)",
+          );
+          break;
+        }
+      }
     }
-    this.prevFingerTip = tip;
+    this.prevFingerTips = tips;
 
     // Real contact points the solver produced this sub-step.
     for (const eq of this.machine.world.contacts) {

@@ -84,9 +84,10 @@ test("the captured contact lands on the lever, not in mid-air", async ({ page })
     d.seek(3.9);
     return d.getContactReport().expected.find((e) => e.name === "arm-knocks-lever")!.observedPoint!;
   });
-  // The lever lives around x≈0.4–0.65, y≈1.2–1.6; the contact should be there.
-  expect(pt.x).toBeGreaterThan(0.3);
-  expect(pt.x).toBeLessThan(0.75);
+  // The lever sits past the opening (x≈0.66–1.1, y≈1.2–1.6); the knocker reaches
+  // out and taps it there — not in mid-air over the hole.
+  expect(pt.x).toBeGreaterThan(0.55);
+  expect(pt.x).toBeLessThan(1.1);
   expect(pt.y).toBeGreaterThan(1.1);
   expect(pt.y).toBeLessThan(1.7);
 });
